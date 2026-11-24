@@ -1352,8 +1352,8 @@ export class GjcBunSdkAdapter implements GjcWorkerRuntime {
         else this.#sdkSessionOwners.add(result.session);
         this.#revision += 1;
         this.#assertHealthy();
-        const defaultProfile = config.modelProfile ? undefined : configuredDefaultProfile(config.modelId, settings);
-        const profileName = config.modelProfile ?? defaultProfile;
+        const defaultProfileName = config.modelProfile ? undefined : configuredDefaultProfile(config.modelId, settings);
+        const profileName = config.modelProfile ?? defaultProfileName;
         if (profileName) {
           await activateModelProfile({
             session: result.session,
@@ -1361,7 +1361,7 @@ export class GjcBunSdkAdapter implements GjcWorkerRuntime {
             settings,
             profileName,
           }).catch((error: unknown) => {
-            if (!defaultProfile || !isStaleProfileError(error)) throw error;
+            if (!defaultProfileName || !isStaleProfileError(error)) throw error;
           });
         } else if (config.modelId !== 'default') {
           // createAgentSession receives the requested model, but a resumed

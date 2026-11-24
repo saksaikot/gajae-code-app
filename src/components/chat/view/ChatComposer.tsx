@@ -133,7 +133,7 @@ interface ChatComposerProps {
   availabilityKnown?: boolean;
   modelPresetsLoading?: boolean;
   /** The model this session started on when it can no longer run; the composer says it fell back. */
-  unavailableRecordedModel?: string | null;
+  unavailableRecordedModel?: string;
   /** Monotonic signal: each increment opens the model preset popup. */
   modelPickerOpenTrigger?: number;
   onSelectModelPreset?: (value: string) => Promise<unknown> | unknown;

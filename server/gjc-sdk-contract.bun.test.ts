@@ -1795,53 +1795,53 @@ function defaultChains(session: { sessionManager: { getEntries(): Array<{ type: 
     .filter((entry) => entry.type === 'configured_model_chain') as unknown as Array<{ role: string; origin: string; identity?: string }>;
 }
 
-async function savePonytailProfile(f: Awaited<ReturnType<typeof identityFixture>>) {
-  await f.registry.saveCustomModelProfile('ponytail', {
+async function savePonytailProfile(fixture: Awaited<ReturnType<typeof identityFixture>>) {
+  await fixture.registry.saveCustomModelProfile('ponytail', {
     display_name: 'Ponytail', required_providers: ['identity-contract'],
     model_mapping: { default: 'identity-contract/astra:xhigh' },
   });
 }
 
 test('a new app session on Current activates the configured default profile as the CLI does', async () => {
-  const f = await identityFixture();
+  const fixture = await identityFixture();
   try {
-    await savePonytailProfile(f);
-    f.settings.override('modelProfile.default', 'ponytail');
-    f.options.modelId = 'default';
-    await f.run('default-profile-activation', async (session) => {
+    await savePonytailProfile(fixture);
+    fixture.settings.override('modelProfile.default', 'ponytail');
+    fixture.options.modelId = 'default';
+    await fixture.run('default-profile-activation', async (session) => {
       const chains = defaultChains(session).filter((chain) => chain.role === 'default');
       assert.ok(chains.some((chain) => chain.origin === 'profile-activation' && chain.identity === 'ponytail'), JSON.stringify(chains));
       assert.ok(!chains.some((chain) => chain.origin === 'startup-override'), JSON.stringify(chains));
       assert.equal(session.getActiveModelProfile(), 'ponytail');
     });
-  } finally { await f.close(); }
+  } finally { await fixture.close(); }
 });
 
 test('a stale default profile does not stop a run on the configured default model', async () => {
-  const f = await identityFixture();
+  const fixture = await identityFixture();
   try {
-    f.settings.override('modelProfile.default', 'no-such-profile');
-    f.settings.override('modelRoles', { default: 'identity-contract/astra:xhigh' });
-    f.options.modelId = 'default';
-    await f.run('stale-default-profile', async (session) => {
+    fixture.settings.override('modelProfile.default', 'no-such-profile');
+    fixture.settings.override('modelRoles', { default: 'identity-contract/astra:xhigh' });
+    fixture.options.modelId = 'default';
+    await fixture.run('stale-default-profile', async (session) => {
       assert.equal(session.model?.id, 'astra');
       assert.equal(session.getActiveModelProfile(), undefined);
     });
-  } finally { await f.close(); }
+  } finally { await fixture.close(); }
 });
 
 test('an app run on a profile leaves the profile as the session file\'s last default chain', async () => {
-  const f = await identityFixture();
+  const fixture = await identityFixture();
   try {
-    await savePonytailProfile(f);
+    await savePonytailProfile(fixture);
     // The worker client turns the picker's profile:ponytail into these two options.
-    Object.assign(f.options, { modelId: 'default', modelProfile: 'ponytail' });
-    await f.run('profile-run-chain', async (session) => {
+    Object.assign(fixture.options, { modelId: 'default', modelProfile: 'ponytail' });
+    await fixture.run('profile-run-chain', async (session) => {
       const chains = defaultChains(session).filter((chain) => chain.role === 'default');
       assert.equal(chains.at(-1)?.origin, 'profile-activation', JSON.stringify(chains));
       assert.equal(chains.at(-1)?.identity, 'ponytail');
     });
-  } finally { await f.close(); }
+  } finally { await fixture.close(); }
 });
 
 async function assertSdkIdentity(

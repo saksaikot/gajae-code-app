@@ -161,9 +161,9 @@ export function serializeGjcDelegationAutomationTools(tools: AutomationTools): A
   return serialized;
 }
 
-type ParentModel = NonNullable<Session['model']>;
+type SessionModel = NonNullable<Session['model']>;
 type ChildModel = {
-  model: ParentModel;
+  model: SessionModel;
   thinkingLevel: Session['thinkingLevel'];
   chain: string[];
   activeIndex?: number;
@@ -173,7 +173,7 @@ type ChildModel = {
 /** Safe to show on the receipt: it names a role or a model, never a provider payload. */
 class DelegationSetupError extends Error {}
 
-function modelSelector(model: ParentModel): string {
+function modelSelector(model: SessionModel): string {
   return `${model.provider}/${model.id}`;
 }
 
@@ -186,16 +186,17 @@ export function roleModelPatterns(role: AgentDefinition, parent: Session): strin
   const definition = profile ? parent.modelRegistry.getModelProfile(profile) : undefined;
   const bindings = definition ? resolveProfileBindings(definition).agentModelOverrides : {};
   const overrides: Record<string, string | string[] | undefined> = parent.settings.get('task.agentModelOverrides');
-  const session = modelSelector(parent.model!);
+  const parentSelector = modelSelector(parent.model!);
   return resolveAgentModelPatterns({
     settingsOverride: overrides[role.name] ?? bindings[role.name as keyof typeof bindings],
-    agentModel: role.model, settings: parent.settings, activeModelPattern: session, fallbackModelPattern: session,
+    agentModel: role.model, settings: parent.settings, activeModelPattern: parentSelector, fallbackModelPattern: parentSelector,
   });
 }
 
-function childEffort(role: AgentDefinition, parent: Session, model: ParentModel, selected: {
-  thinkingLevel?: Session['thinkingLevel']; explicitThinkingLevel: boolean;
+function childEffort(role: AgentDefinition, parent: Session, selected: {
+  model: SessionModel; thinkingLevel?: Session['thinkingLevel']; explicitThinkingLevel: boolean;
 }): Session['thinkingLevel'] {
+  const { model } = selected;
   const sameModel = modelSelector(model) === modelSelector(parent.model!);
   const inherited = sameModel ? parent.thinkingLevel : selected.thinkingLevel ?? model.thinking?.defaultLevel ?? parent.thinkingLevel;
   const wanted = selected.explicitThinkingLevel ? selected.thinkingLevel : role.thinkingLevel ?? inherited;
@@ -229,7 +230,7 @@ export class GjcDelegationExecutor {
       execute: async (callId, raw, _update, _context, signal) => {
         const params = taskSchema.parse(raw);
         this.#checkOwner(owner, signal);
-        const role = await this.#checkRole(owner, params.agent);
+        const role = await this.#allowedRole(owner, params.agent);
         if (params.agent !== 'executor' && params.tasks.some((task) => task.executionMode === 'ultragoal-red-team')) {
           throw new Error('Red-team execution mode requires the executor role.');
         }
@@ -262,7 +263,7 @@ export class GjcDelegationExecutor {
         if (params.action === 'resume') {
           if (selected.length !== 1 || !ids || !params.message) throw new Error('Resume requires one child id and a message.');
           const receipt = selected[0]!;
-          const role = await this.#checkRole(owner, receipt.agent);
+          const role = await this.#allowedRole(owner, receipt.agent);
           if (this.#jobs.has(receipt.id) && !this.#jobs.get(receipt.id)!.settled) {
             throw new Error('Subagent is already running.');
           }
@@ -302,7 +303,7 @@ export class GjcDelegationExecutor {
     }
   }
 
-  async #checkRole(owner: Owner, name: string): Promise<AgentDefinition> {
+  async #allowedRole(owner: Owner, name: string): Promise<AgentDefinition> {
     const spawns = this.options.sessionOptions.spawns ?? 'deny';
     if (spawns !== '*' && !spawns.split(',').map((value) => value.trim()).filter((value) => value !== 'deny').includes(name)) {
       throw new Error('Delegation role is not allowed by this session.');
@@ -387,6 +388,12 @@ export class GjcDelegationExecutor {
     return job;
   }
 
+  async #ownerHooks(parent: Session) {
+    const hooks = await discoverAndLoadHookExtensions([], parent.sessionManager.getCwd());
+    if (hooks.errors.length) throw new DelegationSetupError(`The owner's hooks failed to load: ${hooks.errors.map((error) => error.path).join(', ')}.`);
+    return hooks.factories.map((hook) => hook.factory);
+  }
+
   async #childModel(role: AgentDefinition, parent: Session): Promise<ChildModel> {
     if (!parent.model || parent.thinkingLevel === undefined) throw new Error('Delegation requires an exact model and effort.');
     const patterns = roleModelPatterns(role, parent);
@@ -398,7 +405,7 @@ export class GjcDelegationExecutor {
       throw new DelegationSetupError(`Role ${role.name} needs ${patterns.join(', ')}, which is not available or not signed in.`);
     }
     return {
-      model: selected.model, thinkingLevel: childEffort(role, parent, selected.model, selected),
+      model: selected.model, thinkingLevel: childEffort(role, parent, { ...selected, model: selected.model }),
       chain: selected.parentFallbackSelector ? [selected.parentFallbackSelector] : patterns,
       activeIndex: selected.activeIndex, skips: selected.skips,
     };
@@ -459,8 +466,7 @@ export class GjcDelegationExecutor {
       checkSignal(job.controller.signal);
       checkSignal(this.#closed.signal);
       const role = job.role;
-      const hooks = await discoverAndLoadHookExtensions([], parent.sessionManager.getCwd());
-      if (hooks.errors.length) throw new DelegationSetupError(`The owner's hooks failed to load: ${hooks.errors.map((error) => error.path).join(', ')}.`);
+      const hookFactories = await this.#ownerHooks(parent);
       const requested = new Set(base.toolNames);
       const inherited: string[] = parent.getActiveToolNames().filter((name: string) => requested.has(name));
       // Role tools can narrow the parent policy, never widen it. The SDK's exec
@@ -514,7 +520,7 @@ export class GjcDelegationExecutor {
         toolNames: allowed.filter((name) => !GJC_APP_DELEGATION_TOOL_NAMES.includes(name as 'task' | 'subagent')),
         customTools, spawns: 'deny', taskDepth: childOwner.depth, currentAgentType: job.receipt.agent,
         enableMcpAutoload: false, disableExtensionDiscovery: true,
-        extensions: [enforceAllowlist, ...hooks.factories.map((hook) => hook.factory)], additionalExtensionPaths: [], hookPaths: [], preloadedExtensions: undefined,
+        extensions: [enforceAllowlist, ...hookFactories], additionalExtensionPaths: [], hookPaths: [], preloadedExtensions: undefined,
         discoverableToolAllowedNames: [], requireYieldTool: false, outputSchema: undefined,
         goalToolAllowedOps: [], masterModeContext: undefined,
         forkContextSeed: undefined, providerSessionState: undefined,

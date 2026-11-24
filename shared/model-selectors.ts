@@ -45,9 +45,11 @@ export function primaryModelSelector(value: string): string | undefined {
  * that expect a model id must resolve them through the catalog instead of
  * rendering them verbatim.
  */
+export const PROFILE_PREFIX = 'profile:';
+
 export function isModelSelectionReference(value: string): boolean {
   const trimmed = value.trim();
-  return trimmed === 'default' || trimmed.startsWith('profile:');
+  return trimmed === 'default' || trimmed.startsWith(PROFILE_PREFIX);
 }
 
 /** A selector's model, without the `:<effort>` suffix a role or profile may add. */

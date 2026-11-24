@@ -120,7 +120,7 @@ test('an unpinned session shows the model its file records, not the app-wide sav
   await waitFor(() => assert.ok(view.result.current.providerModelCatalog.gjc));
   assert.equal(view.result.current.gjcModel, 'profile:review');
   assert.equal(localStorage.getItem('gjc-model'), 'anthropic/claude-opus-5');
-  assert.equal(view.result.current.unavailableRecordedModel, null);
+  assert.equal(view.result.current.unavailableRecordedModel, undefined);
 });
 
 test('an unusable recorded model falls back to the saved model and is named for the notice', async () => {

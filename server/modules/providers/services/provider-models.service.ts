@@ -20,12 +20,12 @@ import type {
 } from '@/shared/types.js';
 import { readProviderSessionActiveModelChange, writeProviderSessionActiveModelChange } from '@/shared/utils.js';
 
-import { withoutEffortSuffix } from '../../../../shared/model-selectors.js';
+import { PROFILE_PREFIX, withoutEffortSuffix } from '../../../../shared/model-selectors.js';
 
 export const PROVIDER_MODELS_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 const PROVIDER_MODELS_CACHE_VERSION = 12;
 
-type ProviderModelsServiceDependencies = { resolveProvider?: (provider: LLMProvider) => Pick<IProvider, 'models'>; cachePath?: string; activeModelChangesPath?: string; now?: () => number; readSessionEntries?: (sessionId: string) => Promise<SessionEntry[]> };
+type ProviderModelsServiceDependencies = { resolveProvider?: (provider: LLMProvider) => Pick<IProvider, 'models'>; cachePath?: string; activeModelChangesPath?: string; now?: () => number; readConfiguredChains?: (sessionId: string) => Promise<SessionEntry[]> };
 type RecordedChoice = Pick<ProviderSessionActiveModelChange, 'recordedModel' | 'isRecordedModelAvailable'>;
 type ProviderModelsOptions = { bypassCache?: boolean };
 type ProviderModelsCacheEntry = { updatedAt: number; expiresAt: number; models: ProviderModelsDefinition };
@@ -79,16 +79,16 @@ export function recordedSessionModel(entries: SessionEntry[]): string | undefine
     const entry = entries[index];
     if (entry.type !== 'configured_model_chain' || entry.role !== 'default') continue;
     if (entry.cleared) return undefined;
-    if (entry.origin === 'profile-activation') return entry.identity ? `profile:${entry.identity}` : undefined;
+    if (entry.origin === 'profile-activation') return entry.identity ? `${PROFILE_PREFIX}${entry.identity}` : undefined;
     return entry.entries[0] ? withoutEffortSuffix(entry.entries[0]) : undefined;
   }
   return undefined;
 }
 
-/** A recorded profile must still exist; a recorded model needs its provider signed in (the catalog lists only models some profile or role references, so the provider is the test). An unreachable runtime (no `MODELS`) is no verdict. */
+/** A recorded profile must still exist; a recorded model needs its provider signed in. */
 function catalogOffersRecorded(catalog: ProviderModelsDefinition, recorded: string): boolean {
   if (catalog.OPTIONS.some(({ value }) => value === recorded)) return true;
-  if (recorded.startsWith('profile:')) return false;
+  if (recorded.startsWith(PROFILE_PREFIX)) return false;
   const providerOf = (model: string): string => model.split('/')[0];
   return catalog.MODELS === undefined || catalog.MODELS.some(({ value }) => providerOf(value) === providerOf(recorded));
 }
@@ -114,7 +114,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
   const locateProvider = dependencies.resolveProvider ?? providerRegistry.resolveProvider;
   const fileName = dependencies.cachePath ?? defaultCacheLocation();
   const clock = dependencies.now ?? Date.now;
-  const readEntries = dependencies.readSessionEntries ?? readConfiguredChains;
+  const readChains = dependencies.readConfiguredChains ?? readConfiguredChains;
   const remembered = new Map<LLMProvider, ProviderModelsCacheEntry>();
   const fetching = new Map<LLMProvider, Promise<ProviderModelsResult>>();
   let diskRead: Promise<void> | undefined;
@@ -190,7 +190,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
   };
 
   const recordedChoice = async (provider: LLMProvider, sessionId: string): Promise<RecordedChoice> => {
-    const recordedModel = recordedSessionModel(await readEntries(sessionId));
+    const recordedModel = recordedSessionModel(await readChains(sessionId));
     if (!recordedModel) return {};
     const { models } = await getProviderModels(provider);
     return { recordedModel, isRecordedModelAvailable: catalogOffersRecorded(models, recordedModel) };

@@ -297,125 +297,125 @@ async function defineRole(cwd: string, name: string, frontmatter: string[], body
 }
 
 test('a role defined only in a temp agents folder starts a child whose prompt holds its text', { timeout: 30_000 }, async () => {
-  const f = await fixture();
+  const setup = await fixture();
   try {
-    await defineRole(f.base.cwd!, 'temp-reviewer', [], 'TEMP-ROLE-CANARY: review only.');
-    const [started] = await tool(f.parent, 'task', { ...task(), agent: 'temp-reviewer' });
-    const [settled] = await tool(f.parent, 'subagent', { action: 'await', id: started!.id });
+    await defineRole(setup.base.cwd!, 'temp-reviewer', [], 'TEMP-ROLE-CANARY: review only.');
+    const [started] = await tool(setup.parent, 'task', { ...task(), agent: 'temp-reviewer' });
+    const [settled] = await tool(setup.parent, 'subagent', { action: 'await', id: started!.id });
     assert.equal(settled!.status, 'completed', JSON.stringify(settled));
-    assert.ok(f.calls[0]!.context.systemPrompt?.some((block) => block.includes('TEMP-ROLE-CANARY: review only.')));
-    assert.ok(f.calls[0]!.context.systemPrompt?.some((block) => block.includes('You are a delegated temp-reviewer')));
-  } finally { await f.close(); }
+    assert.ok(setup.calls[0]!.context.systemPrompt?.some((block) => block.includes('TEMP-ROLE-CANARY: review only.')));
+    assert.ok(setup.calls[0]!.context.systemPrompt?.some((block) => block.includes('You are a delegated temp-reviewer')));
+  } finally { await setup.close(); }
 });
 
 test('an unknown role is refused with the folders searched', { timeout: 30_000 }, async () => {
-  const f = await fixture();
+  const setup = await fixture();
   try {
-    await assert.rejects(tool(f.parent, 'task', { ...task(), agent: 'no-such-role' }),
-      (error: Error) => error.message.includes('no-such-role') && error.message.includes(join(f.base.cwd!, '.gjc', 'agents')));
-    assert.equal(f.childInputs.length, 0);
-  } finally { await f.close(); }
+    await assert.rejects(tool(setup.parent, 'task', { ...task(), agent: 'no-such-role' }),
+      (error: Error) => error.message.includes('no-such-role') && error.message.includes(join(setup.base.cwd!, '.gjc', 'agents')));
+    assert.equal(setup.childInputs.length, 0);
+  } finally { await setup.close(); }
 });
 
 test('a role\'s tools never widen the parent\'s allowlist', { timeout: 30_000 }, async () => {
-  const f = await fixture();
+  const setup = await fixture();
   try {
-    await defineRole(f.base.cwd!, 'wide-role', ['tools: read, write, edit, bash'], 'Asks for more than the parent holds.');
-    const [started] = await tool(f.parent, 'task', { ...task(), agent: 'wide-role' });
-    await tool(f.parent, 'subagent', { action: 'await', id: started!.id });
-    const names = f.childInputs[0]!.toolNames!;
+    await defineRole(setup.base.cwd!, 'wide-role', ['tools: read, write, edit, bash'], 'Asks for more than the parent holds.');
+    const [started] = await tool(setup.parent, 'task', { ...task(), agent: 'wide-role' });
+    await tool(setup.parent, 'subagent', { action: 'await', id: started!.id });
+    const names = setup.childInputs[0]!.toolNames!;
     assert.ok(names.includes('read') && names.includes('bash'));
     assert.ok(!names.includes('write') && !names.includes('edit'), JSON.stringify(names));
-  } finally { await f.close(); }
+  } finally { await setup.close(); }
 });
 
 test('the child is recorded under its role, runs the owner\'s hooks after the allowlist, and writes nothing a hook blocks', { timeout: 30_000 }, async () => {
   let escaped = false;
-  const f = await fixture((context) => {
+  const setup = await fixture((context) => {
     if (context.messages.some((message) => message.role === 'toolResult')) return stream(answer());
     const output = answer(); output.stopReason = 'toolUse';
     output.content = [
       { type: 'toolCall', id: 'rogue-probe', name: 'rogue', arguments: {} },
-      { type: 'toolCall', id: 'owner-write', name: 'write', arguments: { path: join(f.base.cwd!, 'blocked.txt'), content: 'x' } },
+      { type: 'toolCall', id: 'owner-write', name: 'write', arguments: { path: join(setup.base.cwd!, 'blocked.txt'), content: 'x' } },
     ];
     return stream(output);
   }, undefined, (options) => ({ ...options, extensions: [...options.extensions!, (api: ExtensionAPI) => {
-    api.registerTool({ name: 'rogue', label: 'Rogue', description: 'Forbidden fixture.', parameters: z.object({}),
+    api.registerTool({ name: 'rogue', label: 'Rogue', description: 'Forbidden setup.', parameters: z.object({}),
       execute: async () => { escaped = true; return { content: [{ type: 'text', text: 'escaped' }] }; } });
     api.on('before_agent_start', async () => {
-      const child = f.children.at(-1)!;
+      const child = setup.children.at(-1)!;
       await child.setActiveToolsByName([...child.getActiveToolNames(), 'rogue']);
     });
   }] }));
   try {
-    const hook = join(f.base.cwd!, '.gjc', 'hooks', 'pre', 'write.ts');
+    const hook = join(setup.base.cwd!, '.gjc', 'hooks', 'pre', 'write.ts');
     await mkdir(dirname(hook), { recursive: true });
     await writeFile(hook, "export default function (pi) { pi.on('tool_call', async (event) => event.toolName === 'write' ? { block: true, reason: 'OWNER-HOOK-BLOCKED' } : undefined); }\n");
     resetCapabilityCache();
-    await defineRole(f.base.cwd!, 'hooked-role', ['tools: read, write'], 'Writes only where the owner allows.');
-    f.base.toolNames = [...f.base.toolNames!, 'write'];
-    const { parent } = await f.createParent();
+    await defineRole(setup.base.cwd!, 'hooked-role', ['tools: read, write'], 'Writes only where the owner allows.');
+    setup.base.toolNames = [...setup.base.toolNames!, 'write'];
+    const { parent } = await setup.createParent();
     const [started] = await tool(parent, 'task', { ...task(), agent: 'hooked-role' });
     const [settled] = await tool(parent, 'subagent', { action: 'await', id: started!.id });
     assert.equal(settled!.status, 'completed', JSON.stringify(settled));
-    const results = f.calls.at(-1)!.context.messages.filter((message) => message.role === 'toolResult');
+    const results = setup.calls.at(-1)!.context.messages.filter((message) => message.role === 'toolResult');
     assert.ok(results.some((message) => message.toolCallId === 'rogue-probe' && message.isError
       && JSON.stringify(message.content).includes('parent delegation allowlist')), JSON.stringify(results));
     assert.ok(results.some((message) => message.toolCallId === 'owner-write' && message.isError
       && JSON.stringify(message.content).includes('OWNER-HOOK-BLOCKED')), JSON.stringify(results));
     assert.equal(escaped, false);
-    await assert.rejects(readFile(join(f.base.cwd!, 'blocked.txt')));
-    const file = f.children[0]!.sessionManager.getSessionFile()!;
+    await assert.rejects(readFile(join(setup.base.cwd!, 'blocked.txt')));
+    const file = setup.children[0]!.sessionManager.getSessionFile()!;
     const chains = (await readFile(file, 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line))
       .filter((entry: { type: string }) => entry.type === 'configured_model_chain');
     const last = chains.at(-1) as { origin: string; identity?: string; entries: string[] };
     assert.equal(last.origin, 'subagent');
     assert.equal(last.identity, 'hooked-role');
     assert.deepEqual(last.entries, ['openai-codex/gpt-6-astra']);
-  } finally { await f.close(); }
+  } finally { await setup.close(); }
 });
 
-async function runRole(f: Awaited<ReturnType<typeof fixture>>, agent: string) {
-  const [started] = await tool(f.parent, 'task', { ...task(), agent });
-  const [settled] = await tool(f.parent, 'subagent', { action: 'await', id: started!.id });
+async function runRole(setup: Awaited<ReturnType<typeof fixture>>, agent: string) {
+  const [started] = await tool(setup.parent, 'task', { ...task(), agent });
+  const [settled] = await tool(setup.parent, 'subagent', { action: 'await', id: started!.id });
   return settled as Snapshot;
 }
 
 test('a helper runs on the active profile\'s role model, else the role file\'s model, else the session\'s', { timeout: 60_000 }, async () => {
-  const f = await fixture();
+  const setup = await fixture();
   try {
-    await defineRole(f.base.cwd!, 'plain-role', [], 'No model of its own.');
-    await defineRole(f.base.cwd!, 'file-role', ['model: openai-codex/gpt-6-beta:high'], 'Model from its file.');
-    assert.equal((await runRole(f, 'plain-role')).status, 'completed');
-    assert.equal(f.calls.at(-1)!.model.id, 'gpt-6-astra');
-    assert.equal(f.children[0]!.thinkingLevel, 'xhigh');
-    assert.equal((await runRole(f, 'file-role')).status, 'completed');
-    assert.equal(f.calls.at(-1)!.model.id, 'gpt-6-beta');
-    assert.equal(f.children[1]!.thinkingLevel, 'high');
-    await f.registry.saveCustomModelProfile('fixture-profile', { display_name: 'Fixture', required_providers: ['openai-codex'],
+    await defineRole(setup.base.cwd!, 'plain-role', [], 'No model of its own.');
+    await defineRole(setup.base.cwd!, 'file-role', ['model: openai-codex/gpt-6-beta:high'], 'Model from its file.');
+    assert.equal((await runRole(setup, 'plain-role')).status, 'completed');
+    assert.equal(setup.calls.at(-1)!.model.id, 'gpt-6-astra');
+    assert.equal(setup.children[0]!.thinkingLevel, 'xhigh');
+    assert.equal((await runRole(setup, 'file-role')).status, 'completed');
+    assert.equal(setup.calls.at(-1)!.model.id, 'gpt-6-beta');
+    assert.equal(setup.children[1]!.thinkingLevel, 'high');
+    await setup.registry.saveCustomModelProfile('fixture-profile', { display_name: 'Fixture', required_providers: ['openai-codex'],
       model_mapping: { default: 'openai-codex/gpt-6-astra:xhigh', executor: 'openai-codex/gpt-6-beta:high' } });
-    await activateModelProfile({ session: f.parent, modelRegistry: f.registry, settings: f.settings, profileName: 'fixture-profile' });
-    assert.equal((await runRole(f, 'executor')).status, 'completed');
-    assert.equal(f.calls.at(-1)!.model.id, 'gpt-6-beta');
-    assert.equal(f.children[2]!.thinkingLevel, 'high');
-    assert.equal((await runRole(f, 'plain-role')).status, 'completed');
-    assert.equal(f.calls.at(-1)!.model.id, 'gpt-6-astra');
-  } finally { await f.close(); }
+    await activateModelProfile({ session: setup.parent, modelRegistry: setup.registry, settings: setup.settings, profileName: 'fixture-profile' });
+    assert.equal((await runRole(setup, 'executor')).status, 'completed');
+    assert.equal(setup.calls.at(-1)!.model.id, 'gpt-6-beta');
+    assert.equal(setup.children[2]!.thinkingLevel, 'high');
+    assert.equal((await runRole(setup, 'plain-role')).status, 'completed');
+    assert.equal(setup.calls.at(-1)!.model.id, 'gpt-6-astra');
+  } finally { await setup.close(); }
 });
 
 test('a role model that cannot resolve fails the job and is never swapped for the session\'s', { timeout: 30_000 }, async () => {
-  const f = await fixture();
+  const setup = await fixture();
   try {
-    await defineRole(f.base.cwd!, 'missing-model-role', ['model: openai-codex/no-such-model'], 'Wants a model nobody has.');
-    const settled = await runRole(f, 'missing-model-role');
+    await defineRole(setup.base.cwd!, 'missing-model-role', ['model: openai-codex/no-such-model'], 'Wants a model nobody has.');
+    const settled = await runRole(setup, 'missing-model-role');
     assert.equal(settled.status, 'failed', JSON.stringify(settled));
     assert.match(settled.resultText, /missing-model-role.*openai-codex\/no-such-model/);
-    assert.equal(f.calls.length, 0, 'a refused role is never prompted on another model');
-    f.parent.settings.override('task.agentModelOverrides', { executor: 'unavailable/unsafe' });
-    const overridden = await runRole(f, 'executor');
+    assert.equal(setup.calls.length, 0, 'a refused role is never prompted on another model');
+    setup.parent.settings.override('task.agentModelOverrides', { executor: 'unavailable/unsafe' });
+    const overridden = await runRole(setup, 'executor');
     assert.equal(overridden.status, 'failed', JSON.stringify(overridden));
-    assert.equal(f.calls.length, 0);
-  } finally { await f.close(); }
+    assert.equal(setup.calls.length, 0);
+  } finally { await setup.close(); }
 });
 
 // SDK 0.17.6 validates direct tool execution like the model-facing agent loop:

@@ -48,8 +48,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const [gjcModel, setGjcModelState] = useState(savedModel);
   const [sessionPinnedModel, setSessionPinnedModel] = useState<string | null>(null);
   // What an unpinned session's file says it started on, while that still runs.
-  const [recordedModel, setRecordedModel] = useState<string | null>(null);
-  const [unavailableRecordedModel, setUnavailableRecordedModel] = useState<string | null>(null);
+  const [recordedModel, setRecordedModel] = useState<string>();
+  const [unavailableRecordedModel, setUnavailableRecordedModel] = useState<string>();
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
   const [providerModelCatalog, setProviderModelCatalog] = useState<Partial<Record<LLMProvider, ProviderModelsDefinition>>>({});
   const [providerModelCacheCatalog, setProviderModelCacheCatalog] = useState<Partial<Record<LLMProvider, ProviderModelsCacheInfo>>>({});
@@ -59,7 +59,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
   const setGjcModel = useCallback((nextModel: string) => {
     localStorage.setItem('gjc-model', nextModel);
-    setRecordedModel(null);
+    setRecordedModel(undefined);
     setGjcModelState(nextModel);
   }, []);
 
@@ -70,8 +70,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
     let disposed = false;
     setSessionPinnedModel(null);
-    setRecordedModel(null);
-    setUnavailableRecordedModel(null);
+    setRecordedModel(undefined);
+    setUnavailableRecordedModel(undefined);
 
     const loadSessionChoice = async () => {
       try {

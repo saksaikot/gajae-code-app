@@ -428,7 +428,7 @@ async function recordedService(entries: SessionEntry[], catalog: ProviderModelsD
   const service = createProviderModelsService({
     cachePath: path.join(tempRoot, 'cache.json'),
     activeModelChangesPath: path.join(tempRoot, 'session-model-changes.json'),
-    readSessionEntries: async () => entries,
+    readConfiguredChains: async () => entries,
     resolveProvider: (provider) => ({
       models: {
         getSupportedModels: async () => catalog,
@@ -497,7 +497,7 @@ test('an explicit model on the first turn becomes the session pin; default pins 
   try {
     const service = createProviderModelsService({
       activeModelChangesPath,
-      readSessionEntries: async () => [],
+      readConfiguredChains: async () => [],
       resolveProvider: (provider) => ({
         models: {
           getSupportedModels: async () => createModels(`${provider}-models`),
