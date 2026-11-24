@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import type { SessionEntry } from '@gajae-code/coding-agent/session/session-manager';
+
 import {
   createProviderModelsService,
   PROVIDER_MODELS_CACHE_TTL_MS,
+  rememberChainsByFile,
+  recordedSessionModel,
 } from '@/modules/providers/services/provider-models.service.js';
 import type {
   ProviderChangeActiveModelInput,
@@ -409,6 +413,116 @@ test('resolveResumeModel prefers a stored changed model over the requested one',
   }
 });
 
+const chainEntry = (origin: string, entries: string[], identity?: string, cleared = false): SessionEntry => ({
+  type: 'configured_model_chain', id: 'chain', parentId: null, timestamp: '2026-11-24T00:00:00.000Z',
+  role: 'default', entries, origin, identity, explicitHead: true, cleared,
+}) as SessionEntry;
+
+const recordedCatalog: ProviderModelsDefinition = {
+  DEFAULT: 'default',
+  OPTIONS: [{ value: 'default', label: 'Current' }, { value: 'profile:ponytail', label: 'Ponytail' }],
+  MODELS: [{ value: 'anthropic/claude-opus-5-5', label: 'Opus 5.5' }],
+};
+
+async function recordedService(entries: SessionEntry[], catalog: ProviderModelsDefinition = recordedCatalog) {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'provider-model-recorded-'));
+  const service = createProviderModelsService({
+    cachePath: path.join(tempRoot, 'cache.json'),
+    activeModelChangesPath: path.join(tempRoot, 'session-model-changes.json'),
+    readConfiguredChains: async () => entries,
+    resolveProvider: (provider) => ({
+      models: {
+        getSupportedModels: async () => catalog,
+        getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
+        changeActiveModel: async (input) => createSessionActiveModelChange(provider, input),
+      },
+    }),
+  });
+  return { service, tempRoot, activeModelChangesPath: path.join(tempRoot, 'session-model-changes.json') };
+}
+
+test('recordedSessionModel reads the last default chain: a profile, else the model without its effort', () => {
+  assert.equal(recordedSessionModel([chainEntry('profile-activation', ['anthropic/claude-opus-5-5:medium'], 'ponytail')]), 'profile:ponytail');
+  assert.equal(recordedSessionModel([chainEntry('startup-override', ['anthropic/claude-opus-5-5:medium'])]), 'anthropic/claude-opus-5-5');
+  assert.equal(recordedSessionModel([
+    chainEntry('profile-activation', ['a/b'], 'ponytail'), chainEntry('startup-override', ['anthropic/claude-opus-5-5']),
+  ]), 'anthropic/claude-opus-5-5');
+  assert.equal(recordedSessionModel([chainEntry('profile-activation', ['a/b'], 'ponytail'), chainEntry('user-selection', [], undefined, true)]), undefined);
+  assert.equal(recordedSessionModel([]), undefined);
+});
+
+test('a session file is scanned again only when its size or mtime changed', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'provider-model-chains-'));
+  const file = path.join(tempRoot, 'session.jsonl');
+  try {
+    await writeFile(file, 'one\n');
+    const scanned: string[] = [];
+    const readChains = rememberChainsByFile(async (name) => {
+      scanned.push(name);
+      return [chainEntry('startup-override', [`a/b${scanned.length}`])];
+    });
+
+    const first = await readChains(file);
+    assert.equal(await readChains(file), first);
+    assert.equal(scanned.length, 1);
+
+    await writeFile(file, 'one\ntwo\n');
+    assert.notEqual(await readChains(file), first);
+    assert.equal(scanned.length, 2);
+
+    const size = (await readFile(file)).length;
+    await writeFile(file, 'x'.repeat(size));
+    await utimes(file, new Date(2020, 0, 1), new Date(2020, 0, 1));
+    await readChains(file);
+    assert.equal(scanned.length, 3);
+
+    assert.deepEqual(await readChains(path.join(tempRoot, 'missing.jsonl')), []);
+    assert.equal(scanned.length, 3);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('with no app pin a session resumes on the profile or model its file records, and the request does not replace it', async () => {
+  const profile = await recordedService([chainEntry('profile-activation', ['anthropic/claude-opus-5-5:medium'], 'ponytail')]);
+  const model = await recordedService([chainEntry('startup-override', ['anthropic/claude-opus-5-5'])]);
+  try {
+    assert.equal(await profile.service.resolveResumeModel('gjc', 's1', 'anthropic/claude-opus-5-5'), 'profile:ponytail');
+    assert.equal(await model.service.resolveResumeModel('gjc', 's1', 'default'), 'anthropic/claude-opus-5-5');
+    assert.deepEqual(
+      (({ recordedModel, isRecordedModelAvailable }) => ({ recordedModel, isRecordedModelAvailable }))(await profile.service.getChangedActiveModel('gjc', 's1')),
+      { recordedModel: 'profile:ponytail', isRecordedModelAvailable: true },
+    );
+    await writeProviderSessionActiveModelChange('gjc', { sessionId: 's1', model: 'composer-2' }, { filePath: profile.activeModelChangesPath });
+    assert.equal(await profile.service.resolveResumeModel('gjc', 's1', 'default'), 'composer-2');
+    const pinned = await profile.service.getChangedActiveModel('gjc', 's1');
+    assert.equal(pinned.recordedModel, undefined);
+  } finally {
+    await rm(profile.tempRoot, { recursive: true, force: true });
+    await rm(model.tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('a recorded profile that is gone, or a model whose provider is signed out, resumes on the request and says so', async () => {
+  const gone = await recordedService([chainEntry('profile-activation', ['a/b'], 'retired')]);
+  const signedOut = await recordedService([chainEntry('startup-override', ['openai-codex/gpt-6-astra'])]);
+  const unlisted = await recordedService([chainEntry('startup-override', ['anthropic/some-unlisted-model'])]);
+  const none = await recordedService([]);
+  try {
+    assert.equal(await gone.service.resolveResumeModel('gjc', 's1', 'zai/glm-5.3'), 'zai/glm-5.3');
+    assert.equal(await signedOut.service.resolveResumeModel('gjc', 's1', 'zai/glm-5.3'), 'zai/glm-5.3');
+    const first = await gone.service.getChangedActiveModel('gjc', 's1');
+    assert.deepEqual([first.recordedModel, first.isRecordedModelAvailable], ['profile:retired', false]);
+    const second = await signedOut.service.getChangedActiveModel('gjc', 's1');
+    assert.deepEqual([second.recordedModel, second.isRecordedModelAvailable], ['openai-codex/gpt-6-astra', false]);
+    assert.equal((await unlisted.service.getChangedActiveModel('gjc', 's1')).isRecordedModelAvailable, true);
+    const absent = await none.service.getChangedActiveModel('gjc', 's1');
+    assert.deepEqual([absent.recordedModel, absent.isRecordedModelAvailable], [undefined, undefined]);
+  } finally {
+    for (const fixture of [gone, signedOut, unlisted, none]) await rm(fixture.tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('an explicit model on the first turn becomes the session pin; default pins nothing', async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'provider-model-first-turn-'));
   const activeModelChangesPath = path.join(tempRoot, 'session-model-changes.json');
@@ -416,6 +530,7 @@ test('an explicit model on the first turn becomes the session pin; default pins 
   try {
     const service = createProviderModelsService({
       activeModelChangesPath,
+      readConfiguredChains: async () => [],
       resolveProvider: (provider) => ({
         models: {
           getSupportedModels: async () => createModels(`${provider}-models`),

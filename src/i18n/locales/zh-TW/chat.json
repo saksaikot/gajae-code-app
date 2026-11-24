@@ -97,6 +97,7 @@
     },
     "send": "發送",
     "stop": "停止",
+    "recordedModelUnavailable": "此工作階段以 {{model}} 啟動，但目前無法使用。改用目前的模型。",
     "hintText": {
       "ctrlEnter": "使用 Ctrl+Enter 發送 • 使用 Shift+Enter 換行 • 切換模式使用 Tab • 使用 / 運行指令",
       "enter": "使用 Enter 發送 • 使用 Shift+Enter 換行 • 切換模式使用 Tab • 使用 / 運行指令",

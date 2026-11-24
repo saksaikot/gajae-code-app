@@ -97,6 +97,7 @@
     },
     "send": "Spedisci",
     "stop": "Fermati",
+    "recordedModelUnavailable": "Questa sessione è iniziata con {{model}}, ora non disponibile. Viene usato il modello corrente.",
     "hintText": {
       "ctrlEnter": "Invia con Ctrl+Enter • ritorno a capo con Shift+Enter • cambia modalità con Tab • comandi con /",
       "enter": "Invia con Enter • fine riga con Shift+Enter • cambia modalità con Tab • comandi con /",

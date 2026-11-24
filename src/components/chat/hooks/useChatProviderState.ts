@@ -8,6 +8,7 @@ import type {
   ProviderModelsCacheInfo,
   ProviderModelsDefinition,
 } from '../../../types/app';
+import { PROFILE_PREFIX } from '../../../../shared/model-selectors';
 import type { PendingPermissionRequest, PermissionMode } from '../types/types';
 
 const GJC_PROVIDER: LLMProvider = 'gjc';
@@ -16,12 +17,18 @@ const DEFAULT_PERMISSION_MODE: PermissionMode = 'default';
 
 interface UseChatProviderStateArgs { selectedSession: ProjectSession | null; selectedProject: Project | null; }
 type ProviderModelsApiResponse = { success?: boolean; data?: { models?: ProviderModelsDefinition; cache?: ProviderModelsCacheInfo; }; };
-type ChangeActiveModelApiResponse = { success?: boolean; data?: { supported?: boolean; changed?: boolean; model?: string | null; }; };
+type ChangeActiveModelApiResponse = { success?: boolean; data?: { supported?: boolean; changed?: boolean; model?: string | null; recordedModel?: string; isRecordedModelAvailable?: boolean; }; };
 
 const savedModel = () => localStorage.getItem('gjc-model') || DEFAULT_GJC_MODEL;
 
 function activeModelPath(sessionId: string) {
   return `/api/providers/gjc/sessions/${encodeURIComponent(sessionId)}/active-model`;
+}
+
+/** A profile reads as the picker labels it (its bare name once the catalog dropped it); a model stays its selector. */
+function recordedDisplayName(selector: string, options: ProviderModelsDefinition['OPTIONS'] | undefined): string {
+  if (!selector.startsWith(PROFILE_PREFIX)) return selector;
+  return options?.find(({ value }) => value === selector)?.label || selector.slice(PROFILE_PREFIX.length);
 }
 
 /**
@@ -47,6 +54,8 @@ function catalogOffers(definition: ProviderModelsDefinition, candidate: string |
 export function useChatProviderState({ selectedSession, selectedProject: _selectedProject }: UseChatProviderStateArgs) {
   const [gjcModel, setGjcModelState] = useState(savedModel);
   const [sessionPinnedModel, setSessionPinnedModel] = useState<string | null>(null);
+  const [recordedModel, setRecordedModel] = useState<string>();
+  const [unavailableRecordedModel, setUnavailableRecordedModel] = useState<string>();
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
   const [providerModelCatalog, setProviderModelCatalog] = useState<Partial<Record<LLMProvider, ProviderModelsDefinition>>>({});
   const [providerModelCacheCatalog, setProviderModelCacheCatalog] = useState<Partial<Record<LLMProvider, ProviderModelsCacheInfo>>>({});
@@ -56,6 +65,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
   const setGjcModel = useCallback((nextModel: string) => {
     localStorage.setItem('gjc-model', nextModel);
+    setRecordedModel(undefined);
+    setUnavailableRecordedModel(undefined);
     setGjcModelState(nextModel);
   }, []);
 
@@ -66,6 +77,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
     let disposed = false;
     setSessionPinnedModel(null);
+    setRecordedModel(undefined);
+    setUnavailableRecordedModel(undefined);
 
     const loadSessionChoice = async () => {
       try {
@@ -80,6 +93,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
           : '';
         setSessionPinnedModel(pin || null);
         setGjcModelState(pin || savedModel());
+        if (pin || !result.data?.recordedModel) return;
+        if (result.data.isRecordedModelAvailable) setRecordedModel(result.data.recordedModel);
+        else setUnavailableRecordedModel(result.data.recordedModel);
       } catch {
         // The server remains authoritative when this display-only request fails.
       }
@@ -160,8 +176,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
   return {
     provider: GJC_PROVIDER,
-    gjcModel,
+    gjcModel: recordedModel ?? gjcModel,
     sessionPinnedModel,
+    unavailableRecordedModel: unavailableRecordedModel && recordedDisplayName(unavailableRecordedModel, providerModelCatalog.gjc?.OPTIONS),
     setGjcModel,
     permissionMode: DEFAULT_PERMISSION_MODE,
     pendingPermissionRequests,

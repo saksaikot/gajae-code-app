@@ -97,6 +97,7 @@
     },
     "send": "Send",
     "stop": "Stop",
+    "recordedModelUnavailable": "This session started on {{model}}, which is not available now. Using the current model instead.",
     "hintText": {
       "ctrlEnter": "Send with Ctrl+Enter • newline with Shift+Enter • change modes with Tab • commands with /",
       "enter": "Send with Enter • newline with Shift+Enter • change modes with Tab • commands with /",

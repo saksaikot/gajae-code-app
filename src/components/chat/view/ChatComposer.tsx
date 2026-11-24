@@ -132,6 +132,8 @@ interface ChatComposerProps {
   /** Whether `modelOptions` is the runtime's answer; see ModelAndReasoningPicker. */
   availabilityKnown?: boolean;
   modelPresetsLoading?: boolean;
+  /** The model this session started on when it can no longer run; the composer says it fell back. */
+  unavailableRecordedModel?: string;
   /** Monotonic signal: each increment opens the model preset popup. */
   modelPickerOpenTrigger?: number;
   onSelectModelPreset?: (value: string) => Promise<unknown> | unknown;
@@ -207,6 +209,7 @@ export default function ChatComposer({
   modelOptions = [],
   availabilityKnown = false,
   modelPresetsLoading,
+  unavailableRecordedModel,
   modelPickerOpenTrigger,
   onSelectModelPreset = () => {},
   reasoningEffort = 'default',
@@ -456,6 +459,12 @@ export default function ChatComposer({
               placeholder={placeholder}
             />
         </PromptInputBody>
+
+        {unavailableRecordedModel && (
+          <p role="status" className="px-3 pb-1 text-xs text-muted-foreground">
+            {t('input.recordedModelUnavailable', { model: unavailableRecordedModel })}
+          </p>
+        )}
 
         <PromptInputFooter className="flex-wrap items-end gap-y-1">
           {/*

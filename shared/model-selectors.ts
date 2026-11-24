@@ -39,15 +39,23 @@ export function primaryModelSelector(value: string): string | undefined {
   return unquote(content.slice(0, end).trim());
 }
 
+export const PROFILE_PREFIX = 'profile:';
+
 /**
  * Selection references (`default`, `profile:name`) name an entry in the preset
  * catalog, not a concrete model the runtime reports or runs. Display slots
  * that expect a model id must resolve them through the catalog instead of
  * rendering them verbatim.
  */
+
 export function isModelSelectionReference(value: string): boolean {
   const trimmed = value.trim();
-  return trimmed === 'default' || trimmed.startsWith('profile:');
+  return trimmed === 'default' || trimmed.startsWith(PROFILE_PREFIX);
+}
+
+/** A selector's model, without the `:<effort>` suffix a role or profile may add. */
+export function withoutEffortSuffix(selector: string): string {
+  return selector.replace(/:(?:off|minimal|low|medium|high|xhigh|max)$/, '');
 }
 
 function unquote(value: string): string | undefined {

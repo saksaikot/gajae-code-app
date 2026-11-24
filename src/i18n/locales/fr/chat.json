@@ -97,6 +97,7 @@
     },
     "send": "Envoyer",
     "stop": "Arrêter",
+    "recordedModelUnavailable": "Cette session a démarré avec {{model}}, qui n’est plus disponible. Le modèle actuel est utilisé à la place.",
     "hintText": {
       "ctrlEnter": "Envoyer avec Ctrl+Enter • nouvelle ligne avec Shift+Enter • changer de mode avec Tab • commandes avec /",
       "enter": "Envoyer avec Enter • nouvelle ligne avec Shift+Enter • changer de mode avec Tab • commandes avec /",

@@ -97,6 +97,7 @@
     },
     "send": "Senden",
     "stop": "Stopp",
+    "recordedModelUnavailable": "Diese Sitzung startete mit {{model}}, das jetzt nicht verfügbar ist. Stattdessen wird das aktuelle Modell verwendet.",
     "hintText": {
       "ctrlEnter": "Senden mit Ctrl+Enter • Zeilenumbruch mit Shift+Enter • Modi ändern mit Tab • Befehle mit /",
       "enter": "Senden mit Enter • Zeilenumbruch mit Shift+Enter • Modi ändern mit Tab • Befehle mit /",

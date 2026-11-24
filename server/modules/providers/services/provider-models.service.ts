@@ -1,6 +1,11 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createReadStream, type Stats } from 'node:fs';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { createInterface } from 'node:readline';
+
+import type { SessionEntry } from '@gajae-code/coding-agent/session/session-manager';
+
 
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import type { IProvider } from '@/shared/interfaces.js';
@@ -15,10 +20,14 @@ import type {
 } from '@/shared/types.js';
 import { readProviderSessionActiveModelChange, writeProviderSessionActiveModelChange } from '@/shared/utils.js';
 
+import { PROFILE_PREFIX, withoutEffortSuffix } from '../../../../shared/model-selectors.js';
+
 export const PROVIDER_MODELS_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 const PROVIDER_MODELS_CACHE_VERSION = 12;
 
-type ProviderModelsServiceDependencies = { resolveProvider?: (provider: LLMProvider) => Pick<IProvider, 'models'>; cachePath?: string; activeModelChangesPath?: string; now?: () => number };
+type ProviderModelsServiceDependencies = { resolveProvider?: (provider: LLMProvider) => Pick<IProvider, 'models'>; cachePath?: string; activeModelChangesPath?: string; now?: () => number; readConfiguredChains?: (sessionId: string) => Promise<SessionEntry[]> };
+type ConfiguredChain = Extract<SessionEntry, { type: 'configured_model_chain' }>;
+type RecordedChoice = Pick<ProviderSessionActiveModelChange, 'recordedModel' | 'isRecordedModelAvailable'>;
 type ProviderModelsOptions = { bypassCache?: boolean };
 type ProviderModelsCacheEntry = { updatedAt: number; expiresAt: number; models: ProviderModelsDefinition };
 type ProviderModelsCacheFile = { version: number; entries: Record<string, ProviderModelsCacheEntry> };
@@ -65,10 +74,93 @@ const cacheDetails = (entry: ProviderModelsCacheEntry, source: ProviderModelsCac
   source,
 });
 
+/** The last default chain a session file records, unless a later entry cleared it. */
+function lastDefaultChain(entries: SessionEntry[]): ConfiguredChain | undefined {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.type === 'configured_model_chain' && entry.role === 'default') return entry.cleared ? undefined : entry;
+  }
+  return undefined;
+}
+
+/** The selector a chain stands for: its profile, else its first model without the effort. */
+function chainSelector(chain: ConfiguredChain): string | undefined {
+  if (chain.origin === 'profile-activation') return chain.identity ? `${PROFILE_PREFIX}${chain.identity}` : undefined;
+  return chain.entries[0] ? withoutEffortSuffix(chain.entries[0]) : undefined;
+}
+
+/** What a session started on, from its file's last default chain: `profile:<name>` or `<provider>/<model>`. */
+export function recordedSessionModel(entries: SessionEntry[]): string | undefined {
+  const chain = lastDefaultChain(entries);
+  return chain && chainSelector(chain);
+}
+
+/** A recorded profile must still exist; a recorded model needs its provider signed in. */
+function catalogOffersRecorded(catalog: ProviderModelsDefinition, recorded: string): boolean {
+  if (catalog.OPTIONS.some(({ value }) => value === recorded)) return true;
+  if (recorded.startsWith(PROFILE_PREFIX)) return false;
+  const providerOf = (model: string): string => model.split('/')[0];
+  return catalog.MODELS === undefined || catalog.MODELS.some(({ value }) => providerOf(value) === providerOf(recorded));
+}
+
+/** One file line as a chain entry; undefined for any other line, or a line a live writer has not finished. */
+function parseChainLine(line: string): SessionEntry | undefined {
+  if (!line.includes('"configured_model_chain"')) return undefined;
+  try {
+    return JSON.parse(line) as SessionEntry;
+  } catch {
+    return undefined;
+  }
+}
+
+async function scanChains(file: string): Promise<SessionEntry[]> {
+  const chains: SessionEntry[] = [];
+  for await (const line of createInterface({ input: createReadStream(file, 'utf8'), crlfDelay: Infinity })) {
+    const chain = parseChainLine(line);
+    if (chain) chains.push(chain);
+  }
+  return chains;
+}
+
+/**
+ * Remembers each file's scan under its size and mtime, so a turn on an
+ * unchanged session file (11-100 MB once a session runs long) does not read it
+ * again. The stat comes before the scan: a file that grows mid-scan is scanned
+ * again on the next call.
+ */
+export function rememberChainsByFile(scan: (file: string) => Promise<SessionEntry[]>): (file: string) => Promise<SessionEntry[]> {
+  const scans = new Map<string, { size: number; mtimeMs: number; chains: SessionEntry[] }>();
+  return async (file) => {
+    let info: Stats;
+    try {
+      info = await stat(file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      scans.delete(file);
+      return [];
+    }
+    const known = scans.get(file);
+    if (known && known.size === info.size && known.mtimeMs === info.mtimeMs) return known.chains;
+    const chains = await scan(file);
+    scans.set(file, { size: info.size, mtimeMs: info.mtimeMs, chains });
+    return chains;
+  };
+}
+
+const readChainsOfFile = rememberChainsByFile(scanChains);
+
+/** The session file's default chains only. */
+async function readConfiguredChains(sessionId: string): Promise<SessionEntry[]> {
+  const { sessionsDb } = await import('@/modules/database/index.js');
+  const file = sessionsDb.getSessionById(sessionId)?.jsonl_path;
+  return file ? readChainsOfFile(file) : [];
+}
+
 export const createProviderModelsService = (dependencies: ProviderModelsServiceDependencies = {}) => {
   const locateProvider = dependencies.resolveProvider ?? providerRegistry.resolveProvider;
   const fileName = dependencies.cachePath ?? defaultCacheLocation();
   const clock = dependencies.now ?? Date.now;
+  const readChains = dependencies.readConfiguredChains ?? readConfiguredChains;
   const remembered = new Map<LLMProvider, ProviderModelsCacheEntry>();
   const fetching = new Map<LLMProvider, Promise<ProviderModelsResult>>();
   let diskRead: Promise<void> | undefined;
@@ -143,13 +235,25 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     return fetching.get(provider) ?? retrieve(provider);
   };
 
+  const recordedChoice = async (provider: LLMProvider, sessionId: string): Promise<RecordedChoice> => {
+    const recordedModel = recordedSessionModel(await readChains(sessionId));
+    if (!recordedModel) return {};
+    const { models } = await getProviderModels(provider);
+    return { recordedModel, isRecordedModelAvailable: catalogOffersRecorded(models, recordedModel) };
+  };
+
   return {
     getProviderModels,
     getCurrentActiveModel: (provider: LLMProvider, sessionId?: string): Promise<ProviderCurrentActiveModel> => locateProvider(provider).models.getCurrentActiveModel(sessionId),
-    getChangedActiveModel: (provider: LLMProvider, sessionId: string): Promise<ProviderSessionActiveModelChange> => readProviderSessionActiveModelChange(provider, sessionId, { filePath: dependencies.activeModelChangesPath }),
+    async getChangedActiveModel(provider: LLMProvider, sessionId: string): Promise<ProviderSessionActiveModelChange> {
+      const saved = await readProviderSessionActiveModelChange(provider, sessionId, { filePath: dependencies.activeModelChangesPath });
+      if (!saved.supported || saved.changed) return saved;
+      return { ...saved, ...await recordedChoice(provider, saved.sessionId) };
+    },
     changeActiveModel: (provider: LLMProvider, input: ProviderChangeActiveModelInput): Promise<ProviderSessionActiveModelChange> => locateProvider(provider).models.changeActiveModel(input),
     /**
-     * The model a turn runs on: the session's pin when it has one, else what
+     * The model a turn runs on: the session's pin when it has one, else the
+     * profile or model its file records while that is still available, else what
      * the request asked for. On a session's first turn an explicit request
      * becomes the pin, so the choice made before the first message survives
      * a reload and a later change of the global default; `default` pins
@@ -160,6 +264,8 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
       if (!sessionId?.trim()) return requested || undefined;
       const saved = await readProviderSessionActiveModelChange(provider, sessionId, { filePath: dependencies.activeModelChangesPath });
       if (saved.supported && saved.changed && saved.model?.trim()) return saved.model.trim();
+      const recorded = await recordedChoice(provider, sessionId);
+      if (recorded.isRecordedModelAvailable) return recorded.recordedModel;
       if (options.firstTurn && requested && requested !== 'default') {
         await writeProviderSessionActiveModelChange(provider, { sessionId, model: requested }, { filePath: dependencies.activeModelChangesPath });
       }
