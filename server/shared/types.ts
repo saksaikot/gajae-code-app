@@ -20,7 +20,13 @@ export interface ProviderSkillListOptions { workspacePath?: string; }
 
 export interface ProviderCurrentActiveModel { model: string; }
 export interface ProviderChangeActiveModelInput { model: string; sessionId: string; }
-export interface ProviderSessionActiveModelChange { changed: boolean; model: string | null; provider: LLMProvider; sessionId: string; supported: boolean; }
+export interface ProviderSessionActiveModelChange {
+  changed: boolean; model: string | null; provider: LLMProvider; sessionId: string; supported: boolean;
+  /** What the session's file says it started on, when the app holds no pin: `profile:<name>` or `<provider>/<model>`. */
+  recordedModel?: string;
+  /** Whether the recorded profile still exists and its provider is signed in; present only with `recordedModel`. */
+  isRecordedModelAvailable?: boolean;
+}
 
 type MessageKind = 'text' | 'tool_use' | 'tool_result' | 'thinking' | 'thinking_delta' | 'stream_delta' | 'stream_end' | 'error' | 'complete' | 'status' | 'permission_request' | 'permission_cancelled' | 'session_created' | 'session_title' | 'interactive_prompt' | 'task_notification' | 'system_notice' | 'delegation_updated';
 interface NormalizedToolResult { content?: string; isError?: boolean; toolUseResult?: unknown; }

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 
-import { cleanup, renderHook, waitFor } from '@testing-library/react';
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 
-import type { ProviderModelsDefinition } from '../../../types/app';
+import type { ProjectSession, ProviderModelsDefinition } from '../../../types/app';
 
 import { useChatProviderState } from './useChatProviderState';
 
@@ -93,4 +93,58 @@ test('a catalog that reports no models at all leaves the stored choice alone', a
     cleanup();
     localStorage.clear();
   }
+});
+
+const unpinnedSession = { id: 'session-1', __provider: 'gjc' } as unknown as ProjectSession;
+
+const catalogWithSession = (definition: ProviderModelsDefinition, activeModel: Record<string, unknown>) => {
+  catalog(definition);
+  const fetchCatalog = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => String(url).includes('/active-model')
+    ? new Response(JSON.stringify({ success: true, data: { supported: true, changed: false, model: null, ...activeModel } }))
+    : fetchCatalog(url, init)) as typeof globalThis.fetch;
+};
+
+const sessionProvider = () => renderHook(() => useChatProviderState({ selectedSession: unpinnedSession, selectedProject: null }));
+
+test('an unpinned session shows the model its file records, not the app-wide saved model', async () => {
+  localStorage.setItem('gjc-model', 'anthropic/claude-opus-5');
+  catalogWithSession(
+    { DEFAULT: 'default', OPTIONS: presets, MODELS: models },
+    { recordedModel: 'profile:review', isRecordedModelAvailable: true },
+  );
+
+  const view = sessionProvider();
+
+  await waitFor(() => assert.equal(view.result.current.gjcModel, 'profile:review'));
+  await waitFor(() => assert.ok(view.result.current.providerModelCatalog.gjc));
+  assert.equal(view.result.current.gjcModel, 'profile:review');
+  assert.equal(localStorage.getItem('gjc-model'), 'anthropic/claude-opus-5');
+  assert.equal(view.result.current.unavailableRecordedModel, null);
+});
+
+test('an unusable recorded model falls back to the saved model and is named for the notice', async () => {
+  localStorage.setItem('gjc-model', 'anthropic/claude-opus-5');
+  catalogWithSession(
+    { DEFAULT: 'default', OPTIONS: presets, MODELS: models },
+    { recordedModel: 'profile:retired', isRecordedModelAvailable: false },
+  );
+
+  const view = sessionProvider();
+
+  await waitFor(() => assert.equal(view.result.current.unavailableRecordedModel, 'profile:retired'));
+  assert.equal(view.result.current.gjcModel, 'anthropic/claude-opus-5');
+});
+
+test('picking a model replaces the recorded one', async () => {
+  catalogWithSession(
+    { DEFAULT: 'default', OPTIONS: presets, MODELS: models },
+    { recordedModel: 'profile:review', isRecordedModelAvailable: true },
+  );
+  const view = sessionProvider();
+  await waitFor(() => assert.equal(view.result.current.gjcModel, 'profile:review'));
+
+  act(() => view.result.current.setGjcModel('anthropic/claude-opus-5'));
+
+  assert.equal(view.result.current.gjcModel, 'anthropic/claude-opus-5');
 });

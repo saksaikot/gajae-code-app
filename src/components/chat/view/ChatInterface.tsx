@@ -68,7 +68,7 @@ function ChatInterface({
   }, []);
 
   const {
-    gjcModel, sessionPinnedModel, pendingPermissionRequests, setPendingPermissionRequests,
+    gjcModel, sessionPinnedModel, unavailableRecordedModel, pendingPermissionRequests, setPendingPermissionRequests,
     providerModelCatalog, providerModelCacheCatalog, providerModelsRefreshing,
     providerModelsLoading, hardRefreshProviderModels, selectProviderModel,
   } = useChatProviderState({ selectedSession, selectedProject });
@@ -305,6 +305,7 @@ function ChatInterface({
       modelOptions={providerModelCatalog.gjc?.MODELS ?? []}
       availabilityKnown={Array.isArray(providerModelCatalog.gjc?.MODELS)}
       modelPresetsLoading={providerModelsLoading}
+      unavailableRecordedModel={unavailableRecordedModel}
       modelPickerOpenTrigger={composer.modelPickerTrigger}
       onSelectModelPreset={(model) => selectProviderModel('gjc', model, session.currentSessionId || selectedSession?.id || null)}
       reasoningEffort={reasoningEffort}

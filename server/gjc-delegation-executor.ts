@@ -7,8 +7,13 @@ import { SessionManager } from '@gajae-code/coding-agent/session/session-manager
 import type { CustomTool } from '@gajae-code/coding-agent/extensibility/custom-tools/types';
 import type { AgentSessionEvent } from '@gajae-code/coding-agent/session/agent-session';
 import type { ExtensionFactory } from '@gajae-code/coding-agent/extensibility/extensions/types';
-import { getBundledAgent } from '@gajae-code/coding-agent/task/agents';
-import { taskItemSchema } from '@gajae-code/coding-agent/task/types';
+import { getConfigDirs } from '@gajae-code/coding-agent/config';
+import { resolveProfileBindings } from '@gajae-code/coding-agent/config/model-profiles';
+import { resolveAgentModelPatterns, resolveModelOverrideWithAuthFallback } from '@gajae-code/coding-agent/config/model-resolver';
+import { discoverAndLoadHookExtensions } from '@gajae-code/coding-agent/extensibility/hooks/loader';
+import { discoverAgents, getAgent } from '@gajae-code/coding-agent/task/discovery';
+import { taskItemSchema, type AgentDefinition } from '@gajae-code/coding-agent/task/types';
+import { resolveThinkingLevelForModel } from '@gajae-code/coding-agent/thinking';
 import { resolveTaskRepositoryBinding } from '@gajae-code/coding-agent/gjc-runtime/repository-binding';
 import { isUltragoalAskBlocked, consumeUltragoalAskNudge } from '@gajae-code/coding-agent/gjc-runtime/ultragoal-guard';
 import { formatUltragoalAskBlockMessage } from '@gajae-code/coding-agent/tools/ultragoal-ask-guard';
@@ -69,6 +74,7 @@ type Receipt = z.infer<typeof receiptSchema>;
 type Owner = { id: string; manager: SessionManager; depth: number; session: () => Session };
 type Job = {
   receipt: Receipt;
+  role: AgentDefinition;
   owner: Owner;
   controller: AbortController;
   session?: Session;
@@ -155,6 +161,47 @@ export function serializeGjcDelegationAutomationTools(tools: AutomationTools): A
   return serialized;
 }
 
+type ParentModel = NonNullable<Session['model']>;
+type ChildModel = {
+  model: ParentModel;
+  thinkingLevel: Session['thinkingLevel'];
+  chain: string[];
+  activeIndex?: number;
+  skips: Array<{ selector: string; reason: string }>;
+};
+
+/** Safe to show on the receipt: it names a role or a model, never a provider payload. */
+class DelegationSetupError extends Error {}
+
+function modelSelector(model: ParentModel): string {
+  return `${model.provider}/${model.id}`;
+}
+
+/**
+ * The CLI's order: the session's settings or active profile binding, then the
+ * role file's `model:`, then the session's own model.
+ */
+export function roleModelPatterns(role: AgentDefinition, parent: Session): string[] {
+  const profile = parent.getActiveModelProfile();
+  const definition = profile ? parent.modelRegistry.getModelProfile(profile) : undefined;
+  const bindings = definition ? resolveProfileBindings(definition).agentModelOverrides : {};
+  const overrides: Record<string, string | string[] | undefined> = parent.settings.get('task.agentModelOverrides');
+  const session = modelSelector(parent.model!);
+  return resolveAgentModelPatterns({
+    settingsOverride: overrides[role.name] ?? bindings[role.name as keyof typeof bindings],
+    agentModel: role.model, settings: parent.settings, activeModelPattern: session, fallbackModelPattern: session,
+  });
+}
+
+function childEffort(role: AgentDefinition, parent: Session, model: ParentModel, selected: {
+  thinkingLevel?: Session['thinkingLevel']; explicitThinkingLevel: boolean;
+}): Session['thinkingLevel'] {
+  const sameModel = modelSelector(model) === modelSelector(parent.model!);
+  const inherited = sameModel ? parent.thinkingLevel : selected.thinkingLevel ?? model.thinking?.defaultLevel ?? parent.thinkingLevel;
+  const wanted = selected.explicitThinkingLevel ? selected.thinkingLevel : role.thinkingLevel ?? inherited;
+  return resolveThinkingLevelForModel(model, wanted) as Session['thinkingLevel'];
+}
+
 /**
  * App-owned children. No SDK task executor, async-job registry or discovery.
  * Receipts live in the calling transcript, so a resumed parent can only open
@@ -182,7 +229,7 @@ export class GjcDelegationExecutor {
       execute: async (callId, raw, _update, _context, signal) => {
         const params = taskSchema.parse(raw);
         this.#checkOwner(owner, signal);
-        this.#checkRole(params.agent);
+        const role = await this.#checkRole(owner, params.agent);
         if (params.agent !== 'executor' && params.tasks.some((task) => task.executionMode === 'ultragoal-red-team')) {
           throw new Error('Red-team execution mode requires the executor role.');
         }
@@ -193,7 +240,7 @@ export class GjcDelegationExecutor {
         await this.#authorize(owner, callId, params, signal);
         this.#checkOwner(owner, signal);
         this.#checkCapacity(owner, params.tasks.length);
-        const jobs = params.tasks.map((task, index) => this.#launch(owner, params.agent, task.description,
+        const jobs = params.tasks.map((task, index) => this.#launch(owner, role, task.description,
           [params.context, task.assignment].filter(Boolean).join('\n\n'), undefined, task.executionMode ?? 'default', bindings[index]));
         return result({ subagents: jobs.map((job) => this.#snapshot(job.receipt)) });
       },
@@ -215,7 +262,7 @@ export class GjcDelegationExecutor {
         if (params.action === 'resume') {
           if (selected.length !== 1 || !ids || !params.message) throw new Error('Resume requires one child id and a message.');
           const receipt = selected[0]!;
-          this.#checkRole(receipt.agent);
+          const role = await this.#checkRole(owner, receipt.agent);
           if (this.#jobs.has(receipt.id) && !this.#jobs.get(receipt.id)!.settled) {
             throw new Error('Subagent is already running.');
           }
@@ -224,7 +271,7 @@ export class GjcDelegationExecutor {
           this.#checkOwner(owner, signal);
           this.#checkCapacity(owner, 1);
           if (this.#jobs.has(receipt.id) && !this.#jobs.get(receipt.id)!.settled) throw new Error('Subagent is already running.');
-          const job = this.#launch(owner, receipt.agent, receipt.description, params.message, receipt);
+          const job = this.#launch(owner, role, receipt.description, params.message, receipt);
           return result({ subagents: [this.#snapshot(job.receipt)] });
         }
         if (params.action === 'cancel') {
@@ -255,12 +302,19 @@ export class GjcDelegationExecutor {
     }
   }
 
-  #checkRole(role: string): void {
+  async #checkRole(owner: Owner, name: string): Promise<AgentDefinition> {
     const spawns = this.options.sessionOptions.spawns ?? 'deny';
-    if (spawns !== '*' && !spawns.split(',').map((value) => value.trim()).filter((value) => value !== 'deny').includes(role)) {
+    if (spawns !== '*' && !spawns.split(',').map((value) => value.trim()).filter((value) => value !== 'deny').includes(name)) {
       throw new Error('Delegation role is not allowed by this session.');
     }
-    if (!getBundledAgent(role)) throw new Error('Unknown bundled delegation role.');
+    const cwd = owner.manager.getCwd();
+    const { agents } = await discoverAgents(cwd, undefined, owner.session().settings);
+    const role = getAgent(agents, name);
+    if (!role) {
+      const folders = getConfigDirs('agents', { cwd }).map((entry) => entry.path).join(', ');
+      throw new Error(`Unknown delegation role "${name}". Searched ${folders}, then the built-in roles.`);
+    }
+    return role;
   }
 
   #checkCapacity(owner: Owner, count: number): void {
@@ -314,15 +368,15 @@ export class GjcDelegationExecutor {
     return { ...publicReceipt, status: job && !job.settled ? 'running' : receipt.status };
   }
 
-  #launch(owner: Owner, agent: string, description: string, message: string, previous?: Receipt, executionMode?: Receipt['executionMode'], repositoryBinding?: Receipt['repositoryBinding']): Job {
+  #launch(owner: Owner, role: AgentDefinition, description: string, message: string, previous?: Receipt, executionMode?: Receipt['executionMode'], repositoryBinding?: Receipt['repositoryBinding']): Job {
     this.#launches += 1;
     const id = previous?.id ?? randomUUID();
     const receipt: Receipt = { ...previous, id, owner: owner.id, root: this.#root.id,
-      agent, description, childSessionId: previous?.childSessionId ?? randomUUID(), file: previous?.file ?? '',
+      agent: role.name, description, childSessionId: previous?.childSessionId ?? randomUUID(), file: previous?.file ?? '',
       executionMode: previous?.executionMode ?? executionMode,
       repositoryBinding: previous?.repositoryBinding ?? repositoryBinding,
       status: 'running', resultText: '' };
-    const job: Job = { receipt, owner, controller: new AbortController(), done: Promise.resolve(), settled: false };
+    const job: Job = { receipt, role, owner, controller: new AbortController(), done: Promise.resolve(), settled: false };
     this.#jobs.set(id, job);
     // Reserve capacity before any asynchronous setup or permission callback can race.
     job.done = this.#run(job, message, previous !== undefined).catch(() => {
@@ -333,18 +387,34 @@ export class GjcDelegationExecutor {
     return job;
   }
 
+  async #childModel(role: AgentDefinition, parent: Session): Promise<ChildModel> {
+    if (!parent.model || parent.thinkingLevel === undefined) throw new Error('Delegation requires an exact model and effort.');
+    const patterns = roleModelPatterns(role, parent);
+    const selected = await resolveModelOverrideWithAuthFallback(patterns, modelSelector(parent.model), parent.modelRegistry,
+      parent.settings, parent.credentialSessionId ?? parent.sessionId, {
+        managedFallback: true, ...(parent.getActiveModelProfile() ? { aliasIntent: 'preset-equivalent' as const } : {}),
+      });
+    if (!selected.model || selected.fallbackReason) {
+      throw new DelegationSetupError(`Role ${role.name} needs ${patterns.join(', ')}, which is not available or not signed in.`);
+    }
+    return {
+      model: selected.model, thinkingLevel: childEffort(role, parent, selected.model, selected),
+      chain: selected.parentFallbackSelector ? [selected.parentFallbackSelector] : patterns,
+      activeIndex: selected.activeIndex, skips: selected.skips,
+    };
+  }
+
   async #run(job: Job, message: string, resume: boolean): Promise<void> {
     let unsubscribe: (() => void) | undefined;
     const timeout = setTimeout(() => { void this.#cancel(job.receipt.id).catch(() => {}); }, GJC_DELEGATION_LIMITS.runtimeMs);
     try {
       this.#checkOwner(job.owner, job.controller.signal);
       const parent = job.owner.session();
-      const model = parent.model;
-      const thinkingLevel = parent.thinkingLevel;
       const permissionMode = parent.sdkPermissionMode;
       const base = this.options.sessionOptions;
       job.receipt.repositoryBinding = await resolveTaskRepositoryBinding(parent.sessionManager.getCwd(), job.receipt.repositoryBinding);
-      if (!model || thinkingLevel === undefined) throw new Error('Delegation requires an exact model and effort.');
+      const { model, thinkingLevel, chain, activeIndex, skips } = await this.#childModel(job.role, parent);
+      if (thinkingLevel === undefined) throw new Error('Delegation requires an exact model and effort.');
       const authStorage = base.authStorage ?? base.modelRegistry?.authStorage;
       const configuredSelector = authStorage?.resolveEffectiveCredentialSelector(model.provider, parent.credentialSessionId);
       // AUTO has no configured selector, but the parent's authenticated request
@@ -388,7 +458,9 @@ export class GjcDelegationExecutor {
       await job.owner.manager.flush();
       checkSignal(job.controller.signal);
       checkSignal(this.#closed.signal);
-      const role = getBundledAgent(job.receipt.agent)!;
+      const role = job.role;
+      const hooks = await discoverAndLoadHookExtensions([], parent.sessionManager.getCwd());
+      if (hooks.errors.length) throw new DelegationSetupError(`The owner's hooks failed to load: ${hooks.errors.map((error) => error.path).join(', ')}.`);
       const requested = new Set(base.toolNames);
       const inherited: string[] = parent.getActiveToolNames().filter((name: string) => requested.has(name));
       // Role tools can narrow the parent policy, never widen it. The SDK's exec
@@ -442,7 +514,7 @@ export class GjcDelegationExecutor {
         toolNames: allowed.filter((name) => !GJC_APP_DELEGATION_TOOL_NAMES.includes(name as 'task' | 'subagent')),
         customTools, spawns: 'deny', taskDepth: childOwner.depth, currentAgentType: job.receipt.agent,
         enableMcpAutoload: false, disableExtensionDiscovery: true,
-        extensions: [enforceAllowlist], additionalExtensionPaths: [], hookPaths: [], preloadedExtensions: undefined,
+        extensions: [enforceAllowlist, ...hooks.factories.map((hook) => hook.factory)], additionalExtensionPaths: [], hookPaths: [], preloadedExtensions: undefined,
         discoverableToolAllowedNames: [], requireYieldTool: false, outputSchema: undefined,
         goalToolAllowedOps: [], masterModeContext: undefined,
         forkContextSeed: undefined, providerSessionState: undefined,
@@ -458,8 +530,8 @@ export class GjcDelegationExecutor {
       checkSignal(this.#closed.signal);
       if (output.modelFallbackMessage) throw new Error('Child model fallback refused.');
       await output.session.setModelTemporary(model, thinkingLevel, { persistAsSessionDefault: true, cause: 'startup-override' });
-      output.session.setConfiguredModelChain('default', [`${model.provider}/${model.id}`], 'startup-override', undefined, true);
-      output.session.seedDefaultFallbackResolution(0, []);
+      output.session.setConfiguredModelChain('default', chain, 'subagent', role.name, true);
+      output.session.seedDefaultFallbackResolution(activeIndex ?? 0, skips);
       output.session.setSdkPermissionMode(permissionMode);
       output.session.setSdkPermissionProvider(this.options.permissionProvider);
       await output.session.setActiveToolsByName(allowed);
@@ -481,10 +553,11 @@ export class GjcDelegationExecutor {
         await output.session.prompt(message);
       } finally { job.controller.signal.removeEventListener('abort', abort); }
       if (job.receipt.status === 'running') job.receipt.status = 'completed';
-    } catch {
+    } catch (error) {
       job.receipt.status = 'failed';
       // SDK exceptions can contain provider payloads or credentials; keep them off receipts.
-      job.receipt.resultText = 'Delegated work failed. No successful result is available.';
+      job.receipt.resultText = error instanceof DelegationSetupError
+        ? error.message : 'Delegated work failed. No successful result is available.';
     } finally {
       clearTimeout(timeout);
       unsubscribe?.();

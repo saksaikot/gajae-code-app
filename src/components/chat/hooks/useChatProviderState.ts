@@ -16,7 +16,7 @@ const DEFAULT_PERMISSION_MODE: PermissionMode = 'default';
 
 interface UseChatProviderStateArgs { selectedSession: ProjectSession | null; selectedProject: Project | null; }
 type ProviderModelsApiResponse = { success?: boolean; data?: { models?: ProviderModelsDefinition; cache?: ProviderModelsCacheInfo; }; };
-type ChangeActiveModelApiResponse = { success?: boolean; data?: { supported?: boolean; changed?: boolean; model?: string | null; }; };
+type ChangeActiveModelApiResponse = { success?: boolean; data?: { supported?: boolean; changed?: boolean; model?: string | null; recordedModel?: string; isRecordedModelAvailable?: boolean; }; };
 
 const savedModel = () => localStorage.getItem('gjc-model') || DEFAULT_GJC_MODEL;
 
@@ -47,6 +47,9 @@ function catalogOffers(definition: ProviderModelsDefinition, candidate: string |
 export function useChatProviderState({ selectedSession, selectedProject: _selectedProject }: UseChatProviderStateArgs) {
   const [gjcModel, setGjcModelState] = useState(savedModel);
   const [sessionPinnedModel, setSessionPinnedModel] = useState<string | null>(null);
+  // What an unpinned session's file says it started on, while that still runs.
+  const [recordedModel, setRecordedModel] = useState<string | null>(null);
+  const [unavailableRecordedModel, setUnavailableRecordedModel] = useState<string | null>(null);
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
   const [providerModelCatalog, setProviderModelCatalog] = useState<Partial<Record<LLMProvider, ProviderModelsDefinition>>>({});
   const [providerModelCacheCatalog, setProviderModelCacheCatalog] = useState<Partial<Record<LLMProvider, ProviderModelsCacheInfo>>>({});
@@ -56,6 +59,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
   const setGjcModel = useCallback((nextModel: string) => {
     localStorage.setItem('gjc-model', nextModel);
+    setRecordedModel(null);
     setGjcModelState(nextModel);
   }, []);
 
@@ -66,6 +70,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
     let disposed = false;
     setSessionPinnedModel(null);
+    setRecordedModel(null);
+    setUnavailableRecordedModel(null);
 
     const loadSessionChoice = async () => {
       try {
@@ -80,6 +86,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
           : '';
         setSessionPinnedModel(pin || null);
         setGjcModelState(pin || savedModel());
+        if (pin || !result.data?.recordedModel) return;
+        if (result.data.isRecordedModelAvailable) setRecordedModel(result.data.recordedModel);
+        else setUnavailableRecordedModel(result.data.recordedModel);
       } catch {
         // The server remains authoritative when this display-only request fails.
       }
@@ -160,8 +169,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
   return {
     provider: GJC_PROVIDER,
-    gjcModel,
+    gjcModel: recordedModel ?? gjcModel,
     sessionPinnedModel,
+    unavailableRecordedModel,
     setGjcModel,
     permissionMode: DEFAULT_PERMISSION_MODE,
     pendingPermissionRequests,

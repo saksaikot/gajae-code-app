@@ -8,10 +8,12 @@ import { mergeModelProfiles, resolveProfileBindings } from '@gajae-code/coding-a
 import {
   activateModelProfile,
   getProxyRoutableProviders,
+  ModelProfileCredentialError,
   resolveProxyMode,
   resolveProxyProviderId,
   rewriteSelectorForProxy,
 } from '@gajae-code/coding-agent/config/model-profile-activation';
+import { UnknownModelProfileError } from '@gajae-code/coding-agent/config/model-profile-contract';
 import { resolveModelRoleValue } from '@gajae-code/coding-agent/config/model-resolver';
 import { Settings } from '@gajae-code/coding-agent/config/settings';
 import { AuthStorage } from '@gajae-code/coding-agent/session/auth-storage';
@@ -571,6 +573,18 @@ async function configuredDefaultModelId(
   const resolved = await resolveConfigured(selector);
   if (!resolved) throw new GjcModelResolutionError();
   return resolved;
+}
+
+/** `gjc` activates `modelProfile.default` when no model is named; a run on Current does the same. */
+function configuredDefaultProfile(modelId: string, settings: Settings): string | undefined {
+  if (modelId !== 'default') return undefined;
+  const name = settings.get('modelProfile.default');
+  return typeof name === 'string' && name ? name : undefined;
+}
+
+/** A stale or signed-out default profile must not stop a run that names no profile, as in interactive `gjc`. */
+function isStaleProfileError(error: unknown): boolean {
+  return error instanceof UnknownModelProfileError || error instanceof ModelProfileCredentialError;
 }
 
 /**
@@ -1338,12 +1352,16 @@ export class GjcBunSdkAdapter implements GjcWorkerRuntime {
         else this.#sdkSessionOwners.add(result.session);
         this.#revision += 1;
         this.#assertHealthy();
-        if (config.modelProfile) {
+        const defaultProfile = config.modelProfile ? undefined : configuredDefaultProfile(config.modelId, settings);
+        const profileName = config.modelProfile ?? defaultProfile;
+        if (profileName) {
           await activateModelProfile({
             session: result.session,
             modelRegistry: this.modelRegistry,
             settings,
-            profileName: config.modelProfile,
+            profileName,
+          }).catch((error: unknown) => {
+            if (!defaultProfile || !isStaleProfileError(error)) throw error;
           });
         } else if (config.modelId !== 'default') {
           // createAgentSession receives the requested model, but a resumed

@@ -50,6 +50,11 @@ export function isModelSelectionReference(value: string): boolean {
   return trimmed === 'default' || trimmed.startsWith('profile:');
 }
 
+/** A selector's model, without the `:<effort>` suffix a role or profile may add. */
+export function withoutEffortSuffix(selector: string): string {
+  return selector.replace(/:(?:off|minimal|low|medium|high|xhigh|max)$/, '');
+}
+
 function unquote(value: string): string | undefined {
   if (!value) return undefined;
   if ((value.startsWith('"') && value.endsWith('"'))

@@ -97,6 +97,7 @@
     },
     "send": "Mesajı gönder",
     "stop": "Çalışmayı durdur",
+    "recordedModelUnavailable": "Bu oturum {{model}} ile başladı, ancak şu an kullanılamıyor. Bunun yerine geçerli model kullanılıyor.",
     "hintText": {
       "ctrlEnter": "Ctrl+Enter ile gönderin • Shift+Enter ile yeni satır • Sekme ile modları değiştirin • / ile komutlar",
       "enter": "Enter ile gönder • Shift+Enter ile yeni satır • Sekme ile modları değiştirin • / ile komutlar",

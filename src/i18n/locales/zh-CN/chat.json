@@ -97,6 +97,7 @@
     },
     "send": "发送",
     "stop": "停止",
+    "recordedModelUnavailable": "此会话以 {{model}} 启动，但它现在不可用。改用当前模型。",
     "hintText": {
       "ctrlEnter": "使用Ctrl+Enter发送•使用Shift+Enter换行•使用Tab切换模式•输入/调用命令",
       "enter": "使用Enter发送•使用Shift+Enter换行•使用Tab切换模式•输入/调用命令",
