@@ -12,6 +12,12 @@ import { getProductionJobAuthority } from './gjc-job-orchestrator.js';
 import { GjcJobsClientError } from './gjc-jobs-client.js';
 
 const execFile = promisify(execFileCallback);
+
+/** Windows paths differ by separator and case only in spelling; other platforms compare exactly. */
+export function isSamePath(left: string, right: string, platform: NodeJS.Platform): boolean {
+  if (platform !== 'win32') return left === right;
+  return path.win32.normalize(left).toLowerCase() === path.win32.normalize(right).toLowerCase();
+}
 const unavailable = () => new AppError('Session worktree is unavailable.', { code: 'SESSION_WORKTREE_UNAVAILABLE', statusCode: 409 });
 
 type JobArchival = { archive(params: { jobId: string }): Promise<unknown>; unarchive(params: { jobId: string }): Promise<unknown> };
@@ -75,10 +81,10 @@ export async function validateSessionRepository(root: string): Promise<void> {
   const project = projectsDb.getProjectPath(root);
   if (!project || project.isArchived) throw new AppError('An active registered project is required.', { code: 'PROJECT_NOT_FOUND', statusCode: 404 });
   try {
-    if (await realpath(root) !== root) throw unavailable();
+    if (!isSamePath(await realpath(root), root, process.platform)) throw unavailable();
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
     const { stdout } = await execFile('git', ['rev-parse', '--show-toplevel'], { cwd: root, env, timeout: 5000, maxBuffer: 64 * 1024 });
-    if (await realpath(stdout.trim()) !== root) throw unavailable();
+    if (!isSamePath(await realpath(stdout.trim()), root, process.platform)) throw unavailable();
     await execFile('git', ['rev-parse', '--verify', 'HEAD^{commit}'], { cwd: root, env, timeout: 5000, maxBuffer: 64 * 1024 });
   } catch {
     throw new AppError('Choose a registered Git repository root with a commit for a worktree session.', { code: 'SESSION_WORKTREE_REPOSITORY_REQUIRED', statusCode: 400 });
@@ -88,10 +94,10 @@ export async function validateSessionRepository(root: string): Promise<void> {
 export async function validateSessionWorktree(row: SessionWorktreeRow, preparedPath = row.worktree_path): Promise<string> {
   await validateSessionRepository(row.repository_root);
   const expected = path.join(row.repository_root, '.gjc-worktrees', row.job_id);
-  if (!preparedPath || preparedPath !== expected) throw unavailable();
+  if (!preparedPath || !isSamePath(preparedPath, expected, process.platform)) throw unavailable();
   const git = new GjcGitClient({ workdir: row.repository_root });
   try {
-    if (await realpath(preparedPath) !== expected) throw unavailable();
+    if (!isSamePath(await realpath(preparedPath), expected, process.platform)) throw unavailable();
     await git.status({ jobId: row.job_id, branch: `job/${row.job_id}`, path: preparedPath });
     return preparedPath;
   } catch {

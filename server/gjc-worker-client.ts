@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import type { Writable } from 'node:stream';
 
 import type { DesktopOwnerActivity } from '../shared/desktopUpdateProtocol.js';
+import { executableFileName } from '../shared/executableFileName.js';
 import type { GjcGoalCommand, GjcGoalSnapshot, GjcGoalScope } from '../shared/gjc-goal.js';
 
 import {
@@ -204,6 +205,8 @@ const REQUEST_TIMEOUT = 'GJC worker request timed out.';
  */
 export const DEFAULT_INITIALIZE_TIMEOUT_MS = 60_000;
 export const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
+const WORKER_TREE_TERMINATION_TIMEOUT_MS = 5_000;
+const WORKER_TREE_TERMINATION_TIMEOUT_MESSAGE = 'GJC worker tree termination timed out.';
 class GjcConfigurationError extends Error {}
 
 /**
@@ -386,8 +389,20 @@ export function killWorkerTree(
   kill: (pid: number, signal: NodeJS.Signals | 0) => void = process.kill,
 ): Promise<void> {
   if (platform === 'win32') {
-    // Windows runtime is frozen in v2; no verified tree-reap implementation exists.
-    return Promise.reject(new Error('GJC worker tree reaping is unconfirmed on Windows.'));
+    // Killing the guard closes the only Job Object handle, so the kernel ends the tree.
+    return new Promise((resolve, reject) => {
+      if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) {
+        resolve();
+        return;
+      }
+      const timer = setTimeout(() => reject(new Error(WORKER_TREE_TERMINATION_TIMEOUT_MESSAGE)), WORKER_TREE_TERMINATION_TIMEOUT_MS);
+      timer.unref?.();
+      child.on('close', () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      child.kill();
+    });
   }
   return new Promise((resolve, reject) => {
     let closed = false;
@@ -438,7 +453,7 @@ export function killWorkerTree(
       closed = true;
       verifyProcessGroup();
     });
-    const timer = setTimeout(() => finish(new Error('GJC worker tree termination timed out.')), 5_000);
+    const timer = setTimeout(() => finish(new Error(WORKER_TREE_TERMINATION_TIMEOUT_MESSAGE)), WORKER_TREE_TERMINATION_TIMEOUT_MS);
     timer.unref?.();
     try {
       if (child.pid) {
@@ -991,21 +1006,20 @@ export class GjcWorkerSupervisor {
   private startWorker(releaseStartup: () => void): Promise<void> {
     const compiled = this.runtime.compiled ?? !import.meta.url.endsWith('.ts');
     const workerPath = this.runtime.workerPath ?? fileURLToPath(new URL(compiled ? './gjc-bun-worker.js' : './gjc-bun-worker.ts', import.meta.url));
+    const bunFileName = executableFileName('bun', this.runtime.platform);
     const bundledBunPath = fileURLToPath(new URL(
-      compiled ? '../../dist-native/bun' : '../dist-native/bun',
+      compiled ? `../../dist-native/${bunFileName}` : `../dist-native/${bunFileName}`,
       import.meta.url,
     ));
     const bunPath = this.runtime.bunPath
       ?? (existsSync(bundledBunPath) ? bundledBunPath : undefined)
       ?? (!compiled && this.runtime.allowDevelopmentBun ? 'bun' : undefined);
     if (!bunPath) throw new Error(SAFE_FAILURE);
-    const coreExecutable = this.runtime.platform === 'win32'
-      ? 'gajae-core.exe'
-      : 'gajae-core';
+    const coreFileName = executableFileName('gajae-core', this.runtime.platform);
     const corePath = this.runtime.corePath ?? fileURLToPath(new URL(
       compiled
-        ? `../../dist-native/${coreExecutable}`
-        : `../dist-native/${coreExecutable}`,
+        ? `../../dist-native/${coreFileName}`
+        : `../dist-native/${coreFileName}`,
       import.meta.url,
     ));
     const coreArgs = ['--', bunPath, workerPath];
@@ -1094,15 +1108,15 @@ export class GjcWorkerSupervisor {
       settleGuard();
       if (remaining.length > 0) this.onStdout(child, remaining);
     });
-    const failWorker = (guardedProcessExited = false): void => {
+    const failWorker = (): void => {
       settleGuard(new Error(SAFE_FAILURE));
-      void this.workerFailed(child, guardedProcessExited);
+      void this.workerFailed(child);
     };
     child.stdin.on('error', () => failWorker());
     child.stderr?.on('data', (chunk: Buffer) => this.diagnose(chunk.toString('utf8')));
     child.on('error', () => failWorker());
-    child.on('exit', () => failWorker(true));
-    child.on('close', () => failWorker(true));
+    child.on('exit', () => failWorker());
+    child.on('close', () => failWorker());
     const starting = guardReady
       .then(() => this.request(
         'worker.initialize',
@@ -1569,7 +1583,7 @@ export class GjcWorkerSupervisor {
     run.resolve();
   }
 
-  private workerFailed(child: Child, guardedProcessExited = false): Promise<GjcWorkerReapOutcome> {
+  private workerFailed(child: Child): Promise<GjcWorkerReapOutcome> {
     const existingGeneration = this.terminatingGeneration;
     if (existingGeneration?.child === child) return existingGeneration.outcome;
     if (child !== this.child) return Promise.resolve('unconfirmed');
@@ -1601,9 +1615,6 @@ export class GjcWorkerSupervisor {
         terminations.push(Promise.reject(error));
       }
     };
-    // On frozen v2 Windows, tree reaping is deliberately unverified and fails closed.
-    // `guardedProcessExited` cannot establish descendant termination without a tested runtime.
-    void guardedProcessExited;
     terminate('GJC worker tree termination failed.', () => this.runtime.killTree(child));
     if (!usesWindowsJobGuard) {
       for (const run of affectedRuns) {
@@ -1622,8 +1633,7 @@ export class GjcWorkerSupervisor {
         // generation's runtime/timeout uncertainty, never failAll/exit/eviction.
         // Lost/unverified separately reported PIDs remain a distinct blocker.
         this.reapingWorkers.delete(child);
-        // Windows has no qualified tree-reap contract, including injected hooks.
-        if (!usesWindowsJobGuard) this.unreapedWorkers.delete(child);
+        this.unreapedWorkers.delete(child);
         // The default no-op run reaper or a discarded PID cannot prove the whole
         // tree gone. Its bounded poison latch survives without retaining every
         // otherwise-reaped Child (and its streams) across later generations.

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn as spawnChild } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -150,6 +151,8 @@ class FakeChild extends EventEmitter {
   readonly stdin = new PassThrough();
   readonly stdout = new PassThrough();
   readonly stderr = new PassThrough();
+  exitCode: number | null = null;
+  signalCode: NodeJS.Signals | null = null;
   killed = false;
 
   kill(): boolean {
@@ -271,6 +274,8 @@ function runtime(child: FakeChild, scope = 'app-session-1') {
     workerPath: '/test/gjc-bun-worker.js',
     bunPath: '/test/bun',
     compiled: true,
+    // The fixtures stand in for a POSIX worker; win32 tests say so explicitly.
+    platform: 'linux' as NodeJS.Platform,
     createScope: () => scope,
     notifyRunStopped: () => {},
     notifyRunFailed: () => {},
@@ -422,7 +427,58 @@ test('fails closed when the Windows job guard never proves app ownership', async
     /GJC worker failed/,
   );
 
-  assert.equal(child.killed, false);
+  assert.equal(child.killed, true);
+});
+
+test('on win32 a reaped worker leaves unreapedWorkers empty', async () => {
+  const child = new FakeChild();
+  const supervisor = new GjcWorkerSupervisor({
+    ...runtime(child),
+    platform: 'win32',
+    environment: { SystemRoot: 'C:\\Windows' },
+    initializeTimeoutMs: 5,
+  });
+  const unreapedWorkers = (supervisor as unknown as { unreapedWorkers: Set<unknown> }).unreapedWorkers;
+
+  await assert.rejects(spawn(supervisor, 'hello', {}, { send() {} }), /GJC worker failed/);
+  for (let attempt = 0; attempt < 50 && unreapedWorkers.size > 0; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+
+  assert.equal(unreapedWorkers.size, 0);
+});
+
+test('with platform win32 the spawned Bun and core paths end in .exe', async () => {
+  const child = new FakeChild();
+  const bundledBun = new URL('../dist-native/bun.exe', import.meta.url);
+  const createdBun = !existsSync(bundledBun);
+  if (createdBun) {
+    await mkdir(new URL('../dist-native/', import.meta.url), { recursive: true });
+    await writeFile(bundledBun, '');
+  }
+  try {
+    let environment: NodeJS.ProcessEnv | undefined;
+    const supervisor = new GjcWorkerSupervisor({
+      ...runtime(child),
+      bunPath: undefined,
+      corePath: undefined,
+      compiled: false,
+      platform: 'win32',
+      environment: { SystemRoot: 'C:\\Windows' },
+      initializeTimeoutMs: 5,
+      spawn: (_command, _args, options) => {
+        environment = options.env;
+        return child;
+      },
+    });
+
+    await assert.rejects(spawn(supervisor, 'hello', {}, { send() {} }), /GJC worker failed/);
+
+    assert.match(environment?.GAJAE_INTERNAL_JOB_APPLICATION ?? '', /gajae-core\.exe$/);
+    assert.match(environment?.GAJAE_INTERNAL_JOB_COMMAND_LINE ?? '', /bun\.exe /);
+  } finally {
+    if (createdBun) await rm(bundledBun, { force: true });
+  }
 });
 
 test('shares one handshake and sends one start request per concurrent run', async () => {
@@ -454,7 +510,7 @@ test('shares one handshake and sends one start request per concurrent run', asyn
   assert.equal(starts.length, 2);
   assert.deepEqual(starts[0]?.payload, { message: 'first', options: { model: 'x' } });
   assert.equal(peer.requests.some((request) => request.method === 'turn.start'), false);
-  assert.equal(detached, process.platform !== 'win32');
+  assert.equal(detached, true);
   assert.equal(environmentExtendsProcessEnvWithAgentDir(launchEnvironment), true);
   assert.equal(command, '/test/gajae-core');
   assert.deepEqual(args, ['--', '/test/bun', '/test/gjc-bun-worker.js']);
@@ -581,6 +637,7 @@ test('fails safely when the native core cannot launch without a Node fallback', 
     workerPath: '/test/gjc-worker.js',
     compiled: true,
     bunPath: '/test/bun',
+    platform: 'linux',
     spawn: (command) => {
       commands.push(command);
       throw new Error('missing');
@@ -1214,11 +1271,23 @@ test('production POSIX terminator waits for direct-child close and process-group
     (error: unknown) => (error as NodeJS.ErrnoException).code === 'ESRCH',
   );
 });
-test('Windows tree reaping is explicitly fail-closed while the v2 runtime is frozen', async () => {
-  await assert.rejects(
-    killWorkerTree(new FakeChild(), 'win32'),
-    /unconfirmed on Windows/,
-  );
+test('on win32 reaping kills the guard and resolves on its exit', async () => {
+  const child = new FakeChild();
+  await killWorkerTree(child, 'win32');
+  assert.equal(child.killed, true);
+});
+
+test('on win32 a guard that already exited resolves at once', async () => {
+  const child = new FakeChild();
+  child.exitCode = 0;
+  await killWorkerTree(child, 'win32');
+  assert.equal(child.killed, false);
+});
+
+test('on win32 a guard that never exits rejects after 5 s', { timeout: 6_000 }, async () => {
+  const child = new FakeChild();
+  child.kill = () => true;
+  await assert.rejects(killWorkerTree(child, 'win32'), /GJC worker tree termination timed out/);
 });
 test('OAuth requests and chat runs share one supervised worker process', async () => {
   const child = new FakeChild();
@@ -2535,7 +2604,7 @@ test('desktop old reap cannot erase a reentrant replacement generation or its pe
   assertDesktopIdle(supervisor.snapshotActivity());
 });
 
-test('desktop frozen Windows tree remains unaccounted even if an injected reaper fulfills', async () => {
+test('desktop Windows worker is accounted for once its tree reaper fulfills', async () => {
   const child = new FakeChild(); const peer = new FakePeer(child, true); replyToHandshake(peer);
   const supervisor = new GjcWorkerSupervisor({
     ...runtime(child), platform: 'win32', killTree: () => {},
@@ -2546,8 +2615,6 @@ test('desktop frozen Windows tree remains unaccounted even if an injected reaper
   peer.respond(await peer.waitFor('models.catalog')); await catalog;
   child.emit('exit', 1);
   await new Promise((resolve) => setImmediate(resolve));
-  const snapshot = supervisor.snapshotActivity();
-  assert.equal(snapshot.retained, 1);
-  assert.equal(snapshot.complete, false);
-  assert.deepEqual(snapshot.unknown, ['worker_runtime_unaccounted']);
+  await new Promise((resolve) => setImmediate(resolve));
+  assertDesktopIdle(supervisor.snapshotActivity());
 });

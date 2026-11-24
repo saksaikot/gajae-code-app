@@ -476,10 +476,12 @@ and `server/gjc-worker-client.test.ts`; see `docs/BROWSER-EGO-POC.md`.
 - On POSIX (Linux and macOS), the application starts the Rust core as a detached
   process-group leader. The Node worker and GJC children inherit that group;
   reaping requires direct-child close and process-group `ESRCH`.
-- Windows is a v2 non-target and runtime-frozen per this brief: CI and a
-  verified desktop machine are unavailable. No `taskkill /T /F` fallback is
-  part of the v2 contract. Windows cleanup is fail-closed as `unconfirmed`, so
-  it cannot release a lease or admit a replacement generation.
+- On Windows the worker runs behind a guard process that owns a kill-on-close
+  Job Object. Reaping kills the guard and waits for its `close`; the kernel then
+  ends the worker and every process it started; "reaped" here means the guard
+  closed and the kernel ends the tree, not that every process is already gone. A guard that already exited
+  counts as reaped, one that never closes fails the reap after 5 s as
+  `unconfirmed`. There is no `taskkill /T /F` fallback.
 - `worker.initialize` covers the whole SDK bootstrap (runtime manifest check,
   model registry build, online model discovery), which takes several seconds on
   a loaded machine. The application bounds it at 60 s

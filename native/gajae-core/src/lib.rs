@@ -209,10 +209,15 @@ mod tests {
     }
     #[test]
     fn parses_absolute_git_workdir_only() {
+        let absolute = if cfg!(windows) {
+            r"C:\tmp\repository"
+        } else {
+            "/tmp/repository"
+        };
         assert_eq!(
-            parse_args([os("git"), os("--workdir"), os("/tmp/repository")]),
+            parse_args([os("git"), os("--workdir"), os(absolute)]),
             Ok(Command::Git {
-                workdir: std::path::PathBuf::from("/tmp/repository")
+                workdir: std::path::PathBuf::from(absolute)
             })
         );
         assert_eq!(

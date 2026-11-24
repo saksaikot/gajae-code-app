@@ -26,6 +26,43 @@ import { useSlashCommands } from './useSlashCommands';
 import { useWorkspaceTarget, type WorkspaceCandidate } from './useWorkspaceTarget';
 import { newQueuedDraftId, settleRetainedComposerSteer, useDurableComposerDraft } from './useDurableComposerDraft';
 
+/** localStorage key of one project's remembered run-location choice. */
+export function runLocationKey(projectId: string): string {
+  return `gjc-run-location:${projectId}`;
+}
+
+const PROJECT_RUN_LOCATION = 'project';
+
+/** Whether the user remembered "Project" as this project's run location. */
+function isProjectRunLocationRemembered(projectId: string | undefined): boolean {
+  try {
+    return Boolean(projectId) && localStorage.getItem(runLocationKey(projectId as string)) === PROJECT_RUN_LOCATION;
+  } catch {
+    // A blocked or unavailable storage is not a reason to lose the composer.
+    return false;
+  }
+}
+
+/** Stores the "Project" choice. */
+function rememberProjectRunLocation(projectId: string | undefined): void {
+  if (!projectId) return;
+  try {
+    localStorage.setItem(runLocationKey(projectId), PROJECT_RUN_LOCATION);
+  } catch {
+    // A full or blocked storage must not take the picker down with it.
+  }
+}
+
+/** "New worktree" forgets the stored choice so the default applies again. */
+function forgetRunLocation(projectId: string | undefined): void {
+  if (!projectId) return;
+  try {
+    localStorage.removeItem(runLocationKey(projectId));
+  } catch {
+    // A full or blocked storage must not take the picker down with it.
+  }
+}
+
 interface UseChatComposerStateArgs { draftRepository?: ComposerDraftRepository; executionCwd?: string | null; selectedProject: Project | null; selectedSession: ProjectSession | null; currentSessionId: string | null; gjcModel: string; reasoningEffort?: string; isLoading: boolean; canAbortSession: boolean; tokenBudget: Record<string, unknown> | null; sendMessage: (message: unknown) => boolean | void; sendByCtrlEnter?: boolean; onSessionProcessing?: MarkSessionProcessing; onSessionEstablished?: (sessionId: string, context: SessionEstablishedContext) => void; onInputFocusChange?: (focused: boolean) => void; onShowSettings?: () => void; onLogin?: (providerId?: string) => void;
   /**
    * What the run-location picker shows before the user touches it.
@@ -64,11 +101,12 @@ export function useChatComposerState(args: UseChatComposerStateArgs) {
   const [isInputFocused, setFocused] = useState(false);
   const [commandModalPayload, setModal] = useState<CommandModalPayload | null>(null);
   // `null` means "not chosen", which is different from "chose Project": only
-  // the former follows `defaultUseWorktree` when it resolves, and the choice is
-  // dropped when the project changes so one project's answer is not carried
-  // into another that may not even be a repository.
-  const [worktreeChoice, setWorktreeChoice] = useState<boolean | null>(null);
+  // the former follows `defaultUseWorktree` when it resolves. Only the "Project"
+  // choice is remembered per project; a project change loads that project's own
+  // choice, so one project's answer is not carried into another.
+  const [worktreeChoice, setWorktreeChoice] = useState<boolean | null>(() => (isProjectRunLocationRemembered(projectId) ? false : null));
   const useWorktree = worktreeChoice ?? defaultUseWorktree;
+  const setUseWorktree = useCallback((value: boolean) => { setWorktreeChoice(value); if (value) forgetRunLocation(projectId); else rememberProjectRunLocation(projectId); }, [projectId]);
   const [modelPickerTrigger, setModelPickerTrigger] = useState(0);
   const [queuePulse, setQueuePulse] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -121,7 +159,7 @@ export function useChatComposerState(args: UseChatComposerStateArgs) {
   // the next would silently pick a location for a repository the user never
   // looked at - and for a project that is not a repository at all, the
   // worktree route would simply fail.
-  useEffect(() => { setWorktreeChoice(null); }, [projectId]);
+  useEffect(() => { setWorktreeChoice(isProjectRunLocationRemembered(projectId) ? false : null); }, [projectId]);
   useEffect(() => { inputRef.current = input; }, [input]);
   useEffect(() => { liveImages.current = attachedImages; }, [attachedImages]);
 
@@ -418,5 +456,5 @@ export function useChatComposerState(args: UseChatComposerStateArgs) {
     } finally { finishOperation(); }
   }, [sendMessage, setPendingPermissionRequests]);
   const handleInputFocusChange = useCallback((focused: boolean) => { setFocused(focused); onInputFocusChange?.(focused); }, [onInputFocusChange]);
-  return { useWorktree, setUseWorktree: setWorktreeChoice, composerFrozen, draftPersistence, draftReady, retryDraftPersistence, input, setInput, textareaRef, inputHighlightRef, isTextareaExpanded, slashCommandsCount, skillCommands: slashCommands.filter((command) => command.type === 'skill'), filteredCommands, frequentCommands, commandQuery, showCommandMenu, selectedCommandIndex, resetCommandMenuState, handleCommandSelect, handleToggleCommandMenu, showFileDropdown, filteredFiles: filteredFiles as MentionableFile[], selectedFileIndex, renderInputWithMentions, selectFile, attachedImages, setAttachedImages, attachmentNotice, dismissAttachmentNotice: () => setAttachmentNotice(null), getRootProps, getInputProps, isDragActive, openImagePicker: open, handleSubmit, handleSteer, modelPickerTrigger, queuedDrafts, editQueuedDraft, deleteQueuedDraft, moveQueuedDraft, resolveSteerResult, handleVoiceTranscript, insertAtEnd, handleInputChange, handleKeyDown, handlePaste, handleTextareaClick: (event: MouseEvent<HTMLTextAreaElement>) => setCursorPosition(event.currentTarget.selectionStart), handleTextareaInput, syncInputOverlayScroll, handleClearInput, handleAbortSession, handlePermissionDecision, handleInputFocusChange, isInputFocused, commandModalPayload, closeCommandModal: () => setModal(null), showCostModal, isWorkspace: workspaceTarget.isWorkspace, workspaceCandidates: workspaceTarget.candidates, workspaceTargetValue: workspaceTarget.target, pickWorkspaceTarget: workspaceTarget.pickTarget };
+  return { useWorktree, setUseWorktree, composerFrozen, draftPersistence, draftReady, retryDraftPersistence, input, setInput, textareaRef, inputHighlightRef, isTextareaExpanded, slashCommandsCount, skillCommands: slashCommands.filter((command) => command.type === 'skill'), filteredCommands, frequentCommands, commandQuery, showCommandMenu, selectedCommandIndex, resetCommandMenuState, handleCommandSelect, handleToggleCommandMenu, showFileDropdown, filteredFiles: filteredFiles as MentionableFile[], selectedFileIndex, renderInputWithMentions, selectFile, attachedImages, setAttachedImages, attachmentNotice, dismissAttachmentNotice: () => setAttachmentNotice(null), getRootProps, getInputProps, isDragActive, openImagePicker: open, handleSubmit, handleSteer, modelPickerTrigger, queuedDrafts, editQueuedDraft, deleteQueuedDraft, moveQueuedDraft, resolveSteerResult, handleVoiceTranscript, insertAtEnd, handleInputChange, handleKeyDown, handlePaste, handleTextareaClick: (event: MouseEvent<HTMLTextAreaElement>) => setCursorPosition(event.currentTarget.selectionStart), handleTextareaInput, syncInputOverlayScroll, handleClearInput, handleAbortSession, handlePermissionDecision, handleInputFocusChange, isInputFocused, commandModalPayload, closeCommandModal: () => setModal(null), showCostModal, isWorkspace: workspaceTarget.isWorkspace, workspaceCandidates: workspaceTarget.candidates, workspaceTargetValue: workspaceTarget.target, pickWorkspaceTarget: workspaceTarget.pickTarget };
 }

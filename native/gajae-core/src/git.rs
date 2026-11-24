@@ -585,7 +585,7 @@ fn validate_workdir(workdir: &Path) -> Result<PathBuf, GitError> {
     {
         return Err(GitError::InvalidPath);
     }
-    let canonical = std::fs::canonicalize(workdir).map_err(|_| GitError::InvalidPath)?;
+    let canonical = dunce::canonicalize(workdir).map_err(|_| GitError::InvalidPath)?;
     let top = git_text(&canonical, ["rev-parse", "--show-toplevel"])
         .map_err(|_| GitError::NotRepository)?;
     let top = PathBuf::from(top);
@@ -621,7 +621,7 @@ fn managed_path(workdir: &Path, job_id: &str, requested: &Path) -> Result<PathBu
 
 fn canonicalize_existing_prefix(path: &Path) -> Result<PathBuf, GitError> {
     let ancestor = nearest_existing(path)?;
-    let canonical_ancestor = std::fs::canonicalize(&ancestor).map_err(|_| GitError::InvalidPath)?;
+    let canonical_ancestor = dunce::canonicalize(&ancestor).map_err(|_| GitError::InvalidPath)?;
     let tail = path
         .strip_prefix(&ancestor)
         .map_err(|_| GitError::InvalidPath)?;
@@ -707,12 +707,12 @@ fn is_registered_with_common_git_dir(common_git_dir: &Path, path: &Path) -> bool
     else {
         return false;
     };
-    std::fs::canonicalize(path.join(".git")).is_ok_and(|worktree_gitdir| gitdir == worktree_gitdir)
+    dunce::canonicalize(path.join(".git")).is_ok_and(|worktree_gitdir| gitdir == worktree_gitdir)
 }
 
 fn canonicalize_git_path(dir: &Path, path: String) -> Result<PathBuf, GitError> {
     let path = PathBuf::from(path);
-    std::fs::canonicalize(if path.is_absolute() {
+    dunce::canonicalize(if path.is_absolute() {
         path
     } else {
         dir.join(path)
@@ -989,7 +989,7 @@ mod tests {
             std::fs::create_dir(&path).unwrap();
             // Canonicalize so expected paths match git's canonical worktree
             // output (macOS resolves /var -> /private/var).
-            let path = std::fs::canonicalize(&path).unwrap();
+            let path = dunce::canonicalize(&path).unwrap();
             assert!(
                 Command::new("git")
                     .args(["init", "--quiet"])
@@ -1063,7 +1063,10 @@ mod tests {
         let list_result = list(&repo.path, "list-test", &json!({}), &mut list_stream).unwrap();
         assert_eq!(list_result["count"], 1);
         assert_eq!(list_stream[0]["item"]["jobId"], "job-1");
-        assert_eq!(list_stream[0]["item"]["path"], path.to_str().unwrap());
+        assert_eq!(
+            Path::new(list_stream[0]["item"]["path"].as_str().unwrap()),
+            path
+        );
         std::fs::write(path.join("tracked.txt"), "after\n").unwrap();
 
         let mut stream = Vec::new();
@@ -1317,6 +1320,77 @@ mod tests {
             ),
             Err(GitError::NotManagedWorktree)
         ));
+    }
+
+    #[test]
+    fn registered_refuses_a_parent_escape_and_a_sibling_repositorys_worktree() {
+        let repo = TestRepo::new();
+        let path = repo.path.join(".gjc-worktrees/job-1");
+        create(
+            &repo.path,
+            &json!({"jobId":"job-1", "branch":"job/job-1", "path":path}),
+        )
+        .unwrap();
+        let escape = repo.path.join(".gjc-worktrees/../job-1");
+        assert!(matches!(
+            registered(&repo.path, "job-1", "job/job-1", &escape),
+            Err(GitError::InvalidPath)
+        ));
+        let sibling = TestRepo::new();
+        let sibling_path = sibling.path.join(".gjc-worktrees/job-1");
+        create(
+            &sibling.path,
+            &json!({"jobId":"job-1", "branch":"job/job-1", "path":sibling_path}),
+        )
+        .unwrap();
+        assert!(matches!(
+            registered(&repo.path, "job-1", "job/job-1", &sibling_path),
+            Err(GitError::InvalidPath)
+        ));
+    }
+
+    #[test]
+    fn create_refuses_a_workdir_that_is_a_symlink() {
+        let repo = TestRepo::new();
+        let link = repo.path.with_extension("link");
+        make_dir_link(&repo.path, &link);
+        let path = link.join(".gjc-worktrees/job-1");
+        let validation = validate_workdir(&link);
+        let result = create(
+            &link,
+            &json!({"jobId":"job-1", "branch":"job/job-1", "path":path}),
+        );
+        remove_dir_link(&link);
+        assert!(matches!(validation, Err(GitError::InvalidPath)));
+        assert!(matches!(result, Err(GitError::InvalidPath)));
+    }
+
+    #[cfg(unix)]
+    fn make_dir_link(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn remove_dir_link(link: &Path) {
+        std::fs::remove_file(link).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn make_dir_link(target: &Path, link: &Path) {
+        assert!(
+            Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    #[cfg(windows)]
+    fn remove_dir_link(link: &Path) {
+        std::fs::remove_dir(link).unwrap();
     }
 
     #[test]

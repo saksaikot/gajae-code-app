@@ -19,6 +19,7 @@ import { registerCustomApi, unregisterCustomApis } from '@gajae-code/ai/api-regi
 import { AssistantMessageEventStream } from '@gajae-code/ai/utils/event-stream';
 import type { AssistantMessage, Context } from '@gajae-code/ai/types';
 
+import { executableFileName } from '../shared/executableFileName.js';
 
 import {
   GJC_APP_BUILTIN_COMMANDS,
@@ -416,7 +417,7 @@ type ProductionWorkerResult = {
 };
 
 async function runProductionWorker(env: NodeJS.ProcessEnv = {}): Promise<ProductionWorkerResult> {
-  const bun = join(process.cwd(), 'dist-native', 'bun');
+  const bun = join(process.cwd(), 'dist-native', executableFileName('bun', process.platform));
   const worker = join(process.cwd(), 'server', 'gjc-bun-worker.ts');
   const home = await mkdtemp(join(tmpdir(), 'gjc-worker-home-'));
   const agentDirectory = env.GJC_WORKER_AGENT_DIR ?? join(home, 'agent');

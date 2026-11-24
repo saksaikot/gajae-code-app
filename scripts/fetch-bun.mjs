@@ -8,6 +8,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
 
+import { executableFileName } from '../shared/executableFileName.js';
+
 const BUN_VERSION = '1.4.0';
 const RELEASE_BASE_URL = `https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}`;
 /**
@@ -19,7 +21,7 @@ const RELEASE_BASE_URL = `https://github.com/oven-sh/bun/releases/download/bun-v
  * now compared to the bytes this pin describes; the archive hash stays because
  * it is what a download is checked against before anything is extracted.
  */
-const PLATFORMS = {
+export const PLATFORMS = {
   'linux-x64': {
     archive: 'bun-linux-x64.zip',
     archiveSha256: '2d03fb5fb83ac8b567aca0a281b2ce1a1a19d488f56c2968d88c3f25e92fe452',
@@ -38,13 +40,24 @@ const PLATFORMS = {
     binary: 'bun-linux-aarch64/bun',
     binarySha256: '086c4121c8738a8e0f5ed730e8a461bc3973b4444e372ddb77aef9a747fa2ae9',
   },
+  'win32-x64': {
+    archive: 'bun-windows-x64.zip',
+    archiveSha256: 'e6f093d39da486b20262ca8cdd5ed6a9e8bc9c2f275b78e6d3a0c5b28cc95901',
+    binary: 'bun-windows-x64/bun.exe',
+    binarySha256: '627d2e4775c24bdedee2cd7ccc18dcadae061e5345274ab6e3c4c797927bfb8f',
+  },
 };
+
+// Windows ships a bsdtar that reads zip. A GNU tar earlier on PATH (Git for
+// Windows) cannot, so the system one is named by path.
+const WINDOWS_TAR = path.win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe');
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
-const destination = path.join(rootDir, 'dist-native', 'bun');
 const platformKey = `${process.platform}-${process.arch}`;
 const platform = PLATFORMS[platformKey];
+const fileName = executableFileName('bun', process.platform);
+const destination = path.join(rootDir, 'dist-native', fileName);
 
 async function versionOf(binary) {
   return new Promise((resolve) => {
@@ -94,56 +107,63 @@ async function download(url, destinationPath) {
 
 async function extractBinary(archivePath, archiveBinaryPath, destinationPath) {
   const output = createWriteStream(destinationPath, { mode: 0o700 });
-  const child = spawn('unzip', ['-p', archivePath, archiveBinaryPath], {
+  const [extractor, extractorArguments] = process.platform === 'win32'
+    ? [WINDOWS_TAR, ['-xOf', archivePath, archiveBinaryPath]]
+    : ['unzip', ['-p', archivePath, archiveBinaryPath]];
+  const child = spawn(extractor, extractorArguments, {
     stdio: ['ignore', 'pipe', 'inherit'],
   });
   const exited = new Promise((resolve, reject) => {
     child.once('error', reject);
     child.once('close', (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`unzip could not extract the Bun binary (exit code ${code}).`));
+      else reject(new Error(`${path.basename(extractor)} could not extract ${fileName} (exit code ${code}).`));
     });
   });
   await Promise.all([pipeline(child.stdout, output), exited]);
 }
 
-if (!platform) {
-  throw new Error(`Bun ${BUN_VERSION} is only bundled for linux-x64, darwin-arm64 and linux-arm64; received ${platformKey}.`);
-}
-
-const installedDigest = await fs.access(destination).then(() => sha256(destination), () => null);
-if (installedDigest === platform.binarySha256) {
-  console.log(`Bun ${BUN_VERSION} is already available at dist-native/bun.`);
-  process.exit(0);
-}
-if (installedDigest !== null) {
-  console.log(`Replacing dist-native/bun: its SHA-256 is ${installedDigest}, not the pinned ${platform.binarySha256}.`);
-}
-
-await fs.mkdir(path.dirname(destination), { recursive: true });
-const temporaryDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gajae-bun-'));
-const archivePath = path.join(temporaryDir, platform.archive);
-const temporaryBinary = path.join(path.dirname(destination), `.bun-${process.pid}.tmp`);
-
-try {
-  console.log(`Downloading Bun ${BUN_VERSION} for ${platformKey}...`);
-  await download(`${RELEASE_BASE_URL}/${platform.archive}`, archivePath);
-  const digest = await sha256(archivePath);
-  if (digest !== platform.archiveSha256) {
-    throw new Error('Downloaded Bun archive failed SHA-256 verification.');
+async function installBun() {
+  if (!platform) {
+    throw new Error(`Bun ${BUN_VERSION} is only bundled for ${Object.keys(PLATFORMS).join(', ')}; received ${platformKey}.`);
   }
 
-  await extractBinary(archivePath, platform.binary, temporaryBinary);
-  await fs.chmod(temporaryBinary, 0o755);
-  if (await sha256(temporaryBinary) !== platform.binarySha256) {
-    throw new Error('Extracted Bun binary does not match its pinned SHA-256.');
+  const installedDigest = await fs.access(destination).then(() => sha256(destination), () => null);
+  if (installedDigest === platform.binarySha256) {
+    console.log(`Bun ${BUN_VERSION} is already available at dist-native/${fileName}.`);
+    return;
   }
-  if (await versionOf(temporaryBinary) !== BUN_VERSION) {
-    throw new Error('Extracted Bun binary did not report the requested version.');
+  if (installedDigest !== null) {
+    console.log(`Replacing dist-native/${fileName}: its SHA-256 is ${installedDigest}, not the pinned ${platform.binarySha256}.`);
   }
-  await fs.rename(temporaryBinary, destination);
-  console.log(`Installed Bun ${BUN_VERSION} at dist-native/bun.`);
-} finally {
-  await fs.rm(temporaryBinary, { force: true });
-  await fs.rm(temporaryDir, { recursive: true, force: true });
+
+  await fs.mkdir(path.dirname(destination), { recursive: true });
+  const temporaryDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gajae-bun-'));
+  const archivePath = path.join(temporaryDir, platform.archive);
+  const temporaryBinary = path.join(path.dirname(destination), `.bun-${process.pid}.tmp`);
+
+  try {
+    console.log(`Downloading Bun ${BUN_VERSION} for ${platformKey}...`);
+    await download(`${RELEASE_BASE_URL}/${platform.archive}`, archivePath);
+    const digest = await sha256(archivePath);
+    if (digest !== platform.archiveSha256) {
+      throw new Error('Downloaded Bun archive failed SHA-256 verification.');
+    }
+
+    await extractBinary(archivePath, platform.binary, temporaryBinary);
+    await fs.chmod(temporaryBinary, 0o755);
+    if (await sha256(temporaryBinary) !== platform.binarySha256) {
+      throw new Error('Extracted Bun binary does not match its pinned SHA-256.');
+    }
+    if (await versionOf(temporaryBinary) !== BUN_VERSION) {
+      throw new Error('Extracted Bun binary did not report the requested version.');
+    }
+    await fs.rename(temporaryBinary, destination);
+    console.log(`Installed Bun ${BUN_VERSION} at dist-native/${fileName}.`);
+  } finally {
+    await fs.rm(temporaryBinary, { force: true });
+    await fs.rm(temporaryDir, { recursive: true, force: true });
+  }
 }
+
+if (import.meta.main) await installBun();
