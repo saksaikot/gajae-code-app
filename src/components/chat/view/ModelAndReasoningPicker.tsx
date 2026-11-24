@@ -5,7 +5,7 @@ import { Check, ChevronDown, ChevronRight, Loader2, Search } from 'lucide-react'
 
 import { useAnchoredPopup } from '../../../hooks/useAnchoredPopup';
 import { focusSearchInputSafely } from '../../../hooks/useDeviceSettings';
-import { isModelSelectionReference, primaryModelSelector } from '../../../../shared/model-selectors';
+import { isModelSelectionReference, primaryModelSelector, withoutEffortSuffix } from '../../../../shared/model-selectors';
 import { cn } from '../../../utils/cn';
 import type { ProviderModelOption } from '../../../types/app';
 
@@ -59,8 +59,7 @@ export const providerOf = (modelId: string): string => (
  * model id — otherwise every effort variant shows up as its own "model".
  */
 export const stripEffortSuffix = (selector: string): string =>
-  (primaryModelSelector(selector) ?? '')
-    .replace(/:(?:off|minimal|low|medium|high|xhigh|max)$/, '');
+  withoutEffortSuffix(primaryModelSelector(selector) ?? '');
 
 /** Display order requested for provider groups; unlisted providers follow alphabetically. */
 const PROVIDER_ORDER = ['openai-codex', 'cursor', 'anthropic', 'kimi-code', 'zai', 'xai', 'grok-build'];

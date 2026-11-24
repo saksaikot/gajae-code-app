@@ -1157,6 +1157,24 @@ function shellArg(text: string): string {
   return `'${text.replaceAll("'", "'\\''")}'`;
 }
 
+/**
+ * Role discovery reads `<home>/.gjc/agent/agents`. The runner sets HOME only,
+ * and Windows resolves the home from USERPROFILE, so the operator's own role
+ * files (and their `model:` lines) would decide what a child needs. Point both
+ * at a home the fixture owns.
+ */
+function useHome(home: string): () => void {
+  const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  return () => {
+    for (const [name, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  };
+}
+
 test('native Ralplan consumes app-owned role artifacts and resumed review lanes without approval fabrication', { timeout: 60_000 }, async () => {
   type Assignment = { role: 'planner' | 'architect' | 'critic'; stage: string; pass: number; owner: string; run: string; source: string; worktree: string };
   let toolPath = '';
@@ -1214,6 +1232,7 @@ test('native Ralplan consumes app-owned role artifacts and resumed review lanes 
     }
     return stream(output);
   });
+  const restoreHome = useHome(join(f.root, 'home'));
   try {
     const cwd = f.base.cwd!;
     await writeFile(join(cwd, 'requirements.md'), 'Invariant: deny remains denied. Verification: test the child policy.\n');
@@ -1284,7 +1303,7 @@ test('native Ralplan consumes app-owned role artifacts and resumed review lanes 
     { agentDir: f.base.agentDir });
     assert.notEqual(duplicate.status, 0);
     assert.match(duplicate.stderr!, /refusing to overwrite/);
-  } finally { await f.close(); }
+  } finally { restoreHome(); await f.close(); }
 });
 
 async function nativeBash(session: Session, command: string, env: Record<string, string>) {

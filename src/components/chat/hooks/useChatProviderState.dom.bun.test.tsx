@@ -132,8 +132,35 @@ test('an unusable recorded model falls back to the saved model and is named for 
 
   const view = sessionProvider();
 
-  await waitFor(() => assert.equal(view.result.current.unavailableRecordedModel, 'profile:retired'));
+  await waitFor(() => assert.equal(view.result.current.unavailableRecordedModel, 'retired'));
   assert.equal(view.result.current.gjcModel, 'anthropic/claude-opus-5');
+});
+
+test('the unavailable notice names a profile by its display name and a model by its selector', async () => {
+  for (const [recordedModel, shown] of [['profile:review', 'Review'], ['anthropic/gone-model', 'anthropic/gone-model']]) {
+    catalogWithSession(
+      { DEFAULT: 'default', OPTIONS: presets, MODELS: models },
+      { recordedModel, isRecordedModelAvailable: false },
+    );
+
+    const view = sessionProvider();
+
+    await waitFor(() => assert.equal(view.result.current.unavailableRecordedModel, shown));
+    cleanup();
+  }
+});
+
+test('picking a model clears the unavailable notice', async () => {
+  catalogWithSession(
+    { DEFAULT: 'default', OPTIONS: presets, MODELS: models },
+    { recordedModel: 'profile:retired', isRecordedModelAvailable: false },
+  );
+  const view = sessionProvider();
+  await waitFor(() => assert.equal(view.result.current.unavailableRecordedModel, 'retired'));
+
+  act(() => view.result.current.setGjcModel('anthropic/claude-opus-5'));
+
+  assert.equal(view.result.current.unavailableRecordedModel, undefined);
 });
 
 test('picking a model replaces the recorded one', async () => {

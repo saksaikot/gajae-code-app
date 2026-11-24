@@ -1,5 +1,5 @@
-import { createReadStream } from 'node:fs';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createReadStream, type Stats } from 'node:fs';
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
@@ -26,6 +26,7 @@ export const PROVIDER_MODELS_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 const PROVIDER_MODELS_CACHE_VERSION = 12;
 
 type ProviderModelsServiceDependencies = { resolveProvider?: (provider: LLMProvider) => Pick<IProvider, 'models'>; cachePath?: string; activeModelChangesPath?: string; now?: () => number; readConfiguredChains?: (sessionId: string) => Promise<SessionEntry[]> };
+type ConfiguredChain = Extract<SessionEntry, { type: 'configured_model_chain' }>;
 type RecordedChoice = Pick<ProviderSessionActiveModelChange, 'recordedModel' | 'isRecordedModelAvailable'>;
 type ProviderModelsOptions = { bypassCache?: boolean };
 type ProviderModelsCacheEntry = { updatedAt: number; expiresAt: number; models: ProviderModelsDefinition };
@@ -73,16 +74,25 @@ const cacheDetails = (entry: ProviderModelsCacheEntry, source: ProviderModelsCac
   source,
 });
 
-/** What a session started on, from its file's last default chain: `profile:<name>` or `<provider>/<model>`. */
-export function recordedSessionModel(entries: SessionEntry[]): string | undefined {
+/** The last default chain a session file records, unless a later entry cleared it. */
+function lastDefaultChain(entries: SessionEntry[]): ConfiguredChain | undefined {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
-    if (entry.type !== 'configured_model_chain' || entry.role !== 'default') continue;
-    if (entry.cleared) return undefined;
-    if (entry.origin === 'profile-activation') return entry.identity ? `${PROFILE_PREFIX}${entry.identity}` : undefined;
-    return entry.entries[0] ? withoutEffortSuffix(entry.entries[0]) : undefined;
+    if (entry.type === 'configured_model_chain' && entry.role === 'default') return entry.cleared ? undefined : entry;
   }
   return undefined;
+}
+
+/** The selector a chain stands for: its profile, else its first model without the effort. */
+function chainSelector(chain: ConfiguredChain): string | undefined {
+  if (chain.origin === 'profile-activation') return chain.identity ? `${PROFILE_PREFIX}${chain.identity}` : undefined;
+  return chain.entries[0] ? withoutEffortSuffix(chain.entries[0]) : undefined;
+}
+
+/** What a session started on, from its file's last default chain: `profile:<name>` or `<provider>/<model>`. */
+export function recordedSessionModel(entries: SessionEntry[]): string | undefined {
+  const chain = lastDefaultChain(entries);
+  return chain && chainSelector(chain);
 }
 
 /** A recorded profile must still exist; a recorded model needs its provider signed in. */
@@ -93,21 +103,57 @@ function catalogOffersRecorded(catalog: ProviderModelsDefinition, recorded: stri
   return catalog.MODELS === undefined || catalog.MODELS.some(({ value }) => providerOf(value) === providerOf(recorded));
 }
 
-/** The session file's default chains only; a line a live writer has not finished is skipped. */
+/** One file line as a chain entry; undefined for any other line, or a line a live writer has not finished. */
+function parseChainLine(line: string): SessionEntry | undefined {
+  if (!line.includes('"configured_model_chain"')) return undefined;
+  try {
+    return JSON.parse(line) as SessionEntry;
+  } catch {
+    return undefined;
+  }
+}
+
+async function scanChains(file: string): Promise<SessionEntry[]> {
+  const chains: SessionEntry[] = [];
+  for await (const line of createInterface({ input: createReadStream(file, 'utf8'), crlfDelay: Infinity })) {
+    const chain = parseChainLine(line);
+    if (chain) chains.push(chain);
+  }
+  return chains;
+}
+
+/**
+ * Remembers each file's scan under its size and mtime, so a turn on an
+ * unchanged session file (11-100 MB once a session runs long) does not read it
+ * again. The stat comes before the scan: a file that grows mid-scan is scanned
+ * again on the next call.
+ */
+export function rememberChainsByFile(scan: (file: string) => Promise<SessionEntry[]>): (file: string) => Promise<SessionEntry[]> {
+  const scans = new Map<string, { size: number; mtimeMs: number; chains: SessionEntry[] }>();
+  return async (file) => {
+    let info: Stats;
+    try {
+      info = await stat(file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      scans.delete(file);
+      return [];
+    }
+    const known = scans.get(file);
+    if (known && known.size === info.size && known.mtimeMs === info.mtimeMs) return known.chains;
+    const chains = await scan(file);
+    scans.set(file, { size: info.size, mtimeMs: info.mtimeMs, chains });
+    return chains;
+  };
+}
+
+const readChainsOfFile = rememberChainsByFile(scanChains);
+
+/** The session file's default chains only. */
 async function readConfiguredChains(sessionId: string): Promise<SessionEntry[]> {
   const { sessionsDb } = await import('@/modules/database/index.js');
   const file = sessionsDb.getSessionById(sessionId)?.jsonl_path;
-  if (!file) return [];
-  const chains: SessionEntry[] = [];
-  try {
-    for await (const line of createInterface({ input: createReadStream(file, 'utf8'), crlfDelay: Infinity })) {
-      if (!line.includes('"configured_model_chain"')) continue;
-      try { chains.push(JSON.parse(line) as SessionEntry); } catch { /* A partly written last line. */ }
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-  }
-  return chains;
+  return file ? readChainsOfFile(file) : [];
 }
 
 export const createProviderModelsService = (dependencies: ProviderModelsServiceDependencies = {}) => {

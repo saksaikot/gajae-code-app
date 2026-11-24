@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -9,6 +9,7 @@ import type { SessionEntry } from '@gajae-code/coding-agent/session/session-mana
 import {
   createProviderModelsService,
   PROVIDER_MODELS_CACHE_TTL_MS,
+  rememberChainsByFile,
   recordedSessionModel,
 } from '@/modules/providers/services/provider-models.service.js';
 import type {
@@ -448,6 +449,38 @@ test('recordedSessionModel reads the last default chain: a profile, else the mod
   ]), 'anthropic/claude-opus-5-5');
   assert.equal(recordedSessionModel([chainEntry('profile-activation', ['a/b'], 'ponytail'), chainEntry('user-selection', [], undefined, true)]), undefined);
   assert.equal(recordedSessionModel([]), undefined);
+});
+
+test('a session file is scanned again only when its size or mtime changed', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'provider-model-chains-'));
+  const file = path.join(tempRoot, 'session.jsonl');
+  try {
+    await writeFile(file, 'one\n');
+    const scanned: string[] = [];
+    const readChains = rememberChainsByFile(async (name) => {
+      scanned.push(name);
+      return [chainEntry('startup-override', [`a/b${scanned.length}`])];
+    });
+
+    const first = await readChains(file);
+    assert.equal(await readChains(file), first);
+    assert.equal(scanned.length, 1);
+
+    await writeFile(file, 'one\ntwo\n');
+    assert.notEqual(await readChains(file), first);
+    assert.equal(scanned.length, 2);
+
+    const size = (await readFile(file)).length;
+    await writeFile(file, 'x'.repeat(size));
+    await utimes(file, new Date(2020, 0, 1), new Date(2020, 0, 1));
+    await readChains(file);
+    assert.equal(scanned.length, 3);
+
+    assert.deepEqual(await readChains(path.join(tempRoot, 'missing.jsonl')), []);
+    assert.equal(scanned.length, 3);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test('with no app pin a session resumes on the profile or model its file records, and the request does not replace it', async () => {

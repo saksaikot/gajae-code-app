@@ -8,6 +8,7 @@ import type {
   ProviderModelsCacheInfo,
   ProviderModelsDefinition,
 } from '../../../types/app';
+import { PROFILE_PREFIX } from '../../../../shared/model-selectors';
 import type { PendingPermissionRequest, PermissionMode } from '../types/types';
 
 const GJC_PROVIDER: LLMProvider = 'gjc';
@@ -22,6 +23,12 @@ const savedModel = () => localStorage.getItem('gjc-model') || DEFAULT_GJC_MODEL;
 
 function activeModelPath(sessionId: string) {
   return `/api/providers/gjc/sessions/${encodeURIComponent(sessionId)}/active-model`;
+}
+
+/** A profile reads as the picker labels it (its bare name once the catalog dropped it); a model stays its selector. */
+function recordedDisplayName(selector: string, options: ProviderModelsDefinition['OPTIONS'] | undefined): string {
+  if (!selector.startsWith(PROFILE_PREFIX)) return selector;
+  return options?.find(({ value }) => value === selector)?.label || selector.slice(PROFILE_PREFIX.length);
 }
 
 /**
@@ -47,7 +54,6 @@ function catalogOffers(definition: ProviderModelsDefinition, candidate: string |
 export function useChatProviderState({ selectedSession, selectedProject: _selectedProject }: UseChatProviderStateArgs) {
   const [gjcModel, setGjcModelState] = useState(savedModel);
   const [sessionPinnedModel, setSessionPinnedModel] = useState<string | null>(null);
-  // What an unpinned session's file says it started on, while that still runs.
   const [recordedModel, setRecordedModel] = useState<string>();
   const [unavailableRecordedModel, setUnavailableRecordedModel] = useState<string>();
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
@@ -60,6 +66,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   const setGjcModel = useCallback((nextModel: string) => {
     localStorage.setItem('gjc-model', nextModel);
     setRecordedModel(undefined);
+    setUnavailableRecordedModel(undefined);
     setGjcModelState(nextModel);
   }, []);
 
@@ -171,7 +178,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     provider: GJC_PROVIDER,
     gjcModel: recordedModel ?? gjcModel,
     sessionPinnedModel,
-    unavailableRecordedModel,
+    unavailableRecordedModel: unavailableRecordedModel && recordedDisplayName(unavailableRecordedModel, providerModelCatalog.gjc?.OPTIONS),
     setGjcModel,
     permissionMode: DEFAULT_PERMISSION_MODE,
     pendingPermissionRequests,

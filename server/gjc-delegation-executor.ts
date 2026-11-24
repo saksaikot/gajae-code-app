@@ -181,7 +181,7 @@ function modelSelector(model: SessionModel): string {
  * The CLI's order: the session's settings or active profile binding, then the
  * role file's `model:`, then the session's own model.
  */
-export function roleModelPatterns(role: AgentDefinition, parent: Session): string[] {
+function roleModelPatterns(role: AgentDefinition, parent: Session): string[] {
   const profile = parent.getActiveModelProfile();
   const definition = profile ? parent.modelRegistry.getModelProfile(profile) : undefined;
   const bindings = definition ? resolveProfileBindings(definition).agentModelOverrides : {};
@@ -193,7 +193,7 @@ export function roleModelPatterns(role: AgentDefinition, parent: Session): strin
   });
 }
 
-function childEffort(role: AgentDefinition, parent: Session, selected: {
+function childThinkingLevel(role: AgentDefinition, parent: Session, selected: {
   model: SessionModel; thinkingLevel?: Session['thinkingLevel']; explicitThinkingLevel: boolean;
 }): Session['thinkingLevel'] {
   const { model } = selected;
@@ -226,7 +226,7 @@ export class GjcDelegationExecutor {
     const tools: CustomTool[] = [];
     if (requested.has('task')) tools.push({
       name: 'task', label: 'Task', concurrency: 'exclusive', parameters: taskSchema,
-      description: 'Start app-owned delegated tasks. Children use this session’s exact model, effort, credentials, tool policy and app browser. Supply complete assignments/context. Returns child ids; use subagent await to collect results. At most 4 active children across the tree, 2 levels, 32 launches per turn, 5 minutes per child. Children are cancelled when their owner turn ends. No model overrides, worktree creation, detached work beyond the turn, or implicit context fork.',
+      description: 'Start app-owned delegated tasks. Children run on their role’s model (the active profile’s binding, else the role’s `model:`, else this session’s model) with this session’s credentials, tool policy, the owner’s hooks and the app browser. Supply complete assignments/context. Returns child ids; use subagent await to collect results. At most 4 active children across the tree, 2 levels, 32 launches per turn, 5 minutes per child. Children are cancelled when their owner turn ends. No per-task model overrides, worktree creation, detached work beyond the turn, or implicit context fork.',
       execute: async (callId, raw, _update, _context, signal) => {
         const params = taskSchema.parse(raw);
         this.#checkOwner(owner, signal);
@@ -248,7 +248,7 @@ export class GjcDelegationExecutor {
     });
     if (requested.has('subagent')) tools.push({
       name: 'subagent', label: 'Subagent', concurrency: 'exclusive', parameters: controlSchema,
-      description: 'List, inspect, await, cancel or resume only this session’s own app-delegated children. Resume requires a message and reuses the saved child transcript with the current parent policy/model/effort/credential. Await returns bounded result text, not an agent:// artifact. No pause, steer, arbitrary session IDs or external jobs.',
+      description: 'List, inspect, await, cancel or resume only this session’s own app-delegated children. Resume requires a message and reuses the saved child transcript with the role’s model as resolved now, and the current parent policy and credential. Await returns bounded result text, not an agent:// artifact. No pause, steer, arbitrary session IDs or external jobs.',
       execute: async (callId, raw, _update, _context, signal) => {
         const params = controlSchema.parse(raw);
         this.#checkOwner(owner, signal);
@@ -405,7 +405,7 @@ export class GjcDelegationExecutor {
       throw new DelegationSetupError(`Role ${role.name} needs ${patterns.join(', ')}, which is not available or not signed in.`);
     }
     return {
-      model: selected.model, thinkingLevel: childEffort(role, parent, { ...selected, model: selected.model }),
+      model: selected.model, thinkingLevel: childThinkingLevel(role, parent, { ...selected, model: selected.model }),
       chain: selected.parentFallbackSelector ? [selected.parentFallbackSelector] : patterns,
       activeIndex: selected.activeIndex, skips: selected.skips,
     };

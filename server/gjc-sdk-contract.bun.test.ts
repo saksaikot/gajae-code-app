@@ -1830,6 +1830,35 @@ test('a stale default profile does not stop a run on the configured default mode
   } finally { await fixture.close(); }
 });
 
+test('only a default profile may be stale: an explicit one that is gone fails the run', async () => {
+  const fixture = await identityFixture();
+  try {
+    fixture.settings.override('modelRoles', { default: 'identity-contract/astra:xhigh' });
+    Object.assign(fixture.options, { modelId: 'default', modelProfile: 'no-such-profile' });
+    await assert.rejects(fixture.run('stale-explicit-profile', async () => undefined), /"ok":false/);
+  } finally { await fixture.close(); }
+});
+
+test('a signed-out default profile does not stop a run, an explicit one does', async () => {
+  const fixture = await identityFixture();
+  try {
+    await fixture.registry.saveCustomModelProfile('signed-out', {
+      display_name: 'Signed out', required_providers: ['no-such-provider'],
+      model_mapping: { default: 'no-such-provider/astra:xhigh' },
+    });
+    fixture.settings.override('modelProfile.default', 'signed-out');
+    fixture.settings.override('modelRoles', { default: 'identity-contract/astra:xhigh' });
+    fixture.options.modelId = 'default';
+    await fixture.run('signed-out-default-profile', async (session) => {
+      assert.equal(session.model?.id, 'astra');
+      assert.equal(session.getActiveModelProfile(), undefined);
+    });
+
+    Object.assign(fixture.options, { modelId: 'default', modelProfile: 'signed-out' });
+    await assert.rejects(fixture.run('signed-out-explicit-profile', async () => undefined));
+  } finally { await fixture.close(); }
+});
+
 test('an app run on a profile leaves the profile as the session file\'s last default chain', async () => {
   const fixture = await identityFixture();
   try {
