@@ -8,6 +8,8 @@ The canonical artifact is
 `gajae-app-server-<version>-linux-x64-node22.tar.gz`, accompanied by an
 artifact with the same name plus `.sha256`. Do not substitute a package
 registry, container image, desktop delivery, or an unverified source build.
+The one exception is Windows, which has no release artifact: see
+[Windows (source build)](#windows-source-build).
 
 ## Supported target and filesystem layout
 
@@ -141,6 +143,63 @@ http on a LAN or tailnet IP cannot register the push worker — front the
 server with `tailscale serve` or a certificate-bearing reverse proxy and
 list that name in `ALLOWED_HOSTS`. The worker (`/sw.js`) receives push and
 routes taps only; it caches nothing, so there is still no offline mode.
+
+## Windows (source build)
+
+The release payload builder is POSIX-only, so Windows 11 runs the server from a
+source checkout that a Scheduled Task starts at logon. Updating means pulling
+the checkout and rebuilding; there is no `current` symlink or rollback.
+
+Prerequisites:
+
+- Node.js 22.22.2 or newer on 22, or 24.15 or newer.
+- Git with `core.autocrlf` off or `.gitattributes` honoured (the repository sets
+  `* text=auto eol=lf`).
+- Rust through `rustup`; `rust-toolchain.toml` pins the toolchain and
+  `rustup` installs it on first use for your user.
+- Visual Studio Build Tools with the **Desktop development with C++** workload.
+  Cargo and `node-pty` need the MSVC linker.
+
+Build, from the checkout (the Scheduled Task below uses `F:\gjc-code-app`):
+
+```powershell
+npm ci
+node scripts/fetch-bun.mjs     # installs dist-native\bun.exe, hash-checked
+npm run build                  # client, server and the Rust core
+```
+
+Put the tailnet name in `.env` in the checkout root. The server stays on
+`127.0.0.1:3001` and `tailscale serve` is the only way in:
+
+```text
+ALLOWED_HOSTS=<pc>.<tailnet>.ts.net
+```
+
+Register the server to start at logon. It has no time limit and keeps running on
+battery:
+
+```powershell
+$action = New-ScheduledTaskAction -Execute 'npm.cmd' -Argument 'run server' -WorkingDirectory 'F:\gjc-code-app'
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+Register-ScheduledTask -TaskName 'GajaeCodeApp' -Action $action -Trigger $trigger -Settings $settings
+```
+
+Expose it to a phone over https on the tailnet. Use `serve`, never `funnel`:
+web mode has no sign-in, so every device on the tailnet is the owner.
+
+```powershell
+tailscale serve --bg 3001
+curl.exe --fail http://127.0.0.1:3001/health
+```
+
+Stopping the server ends the worker and everything it started: the worker runs
+inside a kill-on-close Job Object that its guard process owns.
+
+`npm run typecheck` and `npm run test:e2e:gjc` pass on Windows. `npm test` and
+`cargo test` still fail there in the known test-debt groups (unix sockets,
+symlinks, path assertions, locked SQLite files, the POSIX release payload), so
+the Windows CI entry reports but never fails the run.
 
 ## Cutover to a verified release
 

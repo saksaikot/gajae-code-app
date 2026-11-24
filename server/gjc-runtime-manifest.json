@@ -80,6 +80,30 @@
           "sha256": "6330412b29b72ebbf8efc84ab5e3ffee84c3ecdd313ef3c61aa3b15be4402663"
         }
       ]
+    },
+    "win32-x64": {
+      "files": [
+        {
+          "package": "@gajae-code/natives-win32-x64",
+          "path": "native/pi_natives.win32-x64-baseline.node",
+          "sha256": "f63140206cd451665acab2831aaa460399fa265d21eb76cee0a420ca52cbe5f9"
+        },
+        {
+          "package": "@gajae-code/natives",
+          "path": "native/embedded-addon.js",
+          "sha256": "0ee3be1ce9f174e0c3905bfda78f665d6c177b0e953303b35ff5c5b7735552db"
+        },
+        {
+          "package": "@gajae-code/natives",
+          "path": "native/index.js",
+          "sha256": "3b8bab4b08f871ed6f7fac4f8e115b44ae4e64fba53a65dad12b78296a99aa40"
+        },
+        {
+          "package": "@gajae-code/natives",
+          "path": "native/loader-state.js",
+          "sha256": "6330412b29b72ebbf8efc84ab5e3ffee84c3ecdd313ef3c61aa3b15be4402663"
+        }
+      ]
     }
   },
   "sdkLifecycle": {

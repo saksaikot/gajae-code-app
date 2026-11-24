@@ -4,7 +4,7 @@ import { afterEach, test } from 'node:test';
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { createElement } from 'react';
 
-import { useChatComposerState } from '../hooks/useChatComposerState';
+import { runLocationKey, useChatComposerState } from '../hooks/useChatComposerState';
 import { useFileOpenResolver } from '../../../hooks/useFileOpenResolver';
 import { useProjectGitSummary } from '../../workspace/hooks/useProjectGitSummary';
 import { useProjectChanges } from '../../workspace/hooks/useProjectChanges';
@@ -184,6 +184,67 @@ test('a choice made for one project is not carried into the next', async () => {
   // a repository the user has not looked at yet.
   view.rerender({ projectId: 'project-two' });
   await waitFor(() => assert.equal(view.result.current.useWorktree, true));
+});
+
+const rememberedBase = {
+  selectedSession: null, currentSessionId: null, gjcModel: 'openai-codex/gpt-6-astra', reasoningEffort: 'xhigh',
+  isLoading: false, canAbortSession: false, tokenBudget: null,
+  sendMessage: () => true, scrollToBottom() {}, addMessage() {}, setIsUserScrolledUp() {}, setPendingPermissionRequests() {},
+};
+const projectNamed = (projectId: string) => ({ projectId, fullPath: `/fixture/${projectId}`, displayName: projectId });
+
+test('a "Project" choice survives a remount, and a rerender project-one, project-two, project-one, while project-two follows its default', async () => {
+  globalThis.fetch = (async () => new Response('[]', { status: 200 })) as typeof fetch;
+  const first = renderHook(({ projectId }: { projectId: string }) => useChatComposerState({
+    ...rememberedBase, selectedProject: projectNamed(projectId), defaultUseWorktree: true,
+  }), { initialProps: { projectId: 'project-one' } });
+  assert.equal(first.result.current.useWorktree, true);
+  act(() => { first.result.current.setUseWorktree(false); });
+  assert.equal(first.result.current.useWorktree, false);
+
+  first.rerender({ projectId: 'project-two' });
+  await waitFor(() => assert.equal(first.result.current.useWorktree, true));
+  first.rerender({ projectId: 'project-one' });
+  await waitFor(() => assert.equal(first.result.current.useWorktree, false));
+  first.unmount();
+
+  const reloaded = renderHook(() => useChatComposerState({
+    ...rememberedBase, selectedProject: projectNamed('project-one'), defaultUseWorktree: true,
+  }));
+  assert.equal(reloaded.result.current.useWorktree, false);
+});
+
+test('only "Project" is stored: a "New worktree" pick removes it, so a project that is no longer a repository still calls /providers/sessions', async () => {
+  const requests: string[] = [];
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    requests.push(url);
+    const body = url.includes('/files') ? [] : url.includes('-sessions')
+      ? { success: true, data: { sessionId: 'allocated', projectPath: '/fixture/project-one' } }
+      : { success: true, data: { commands: [], skills: [], isWorkspace: false, candidates: [] } };
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }) as typeof fetch;
+  const view = renderHook(() => useChatComposerState({
+    ...rememberedBase, selectedProject: projectNamed('project-one'), defaultUseWorktree: true,
+  }));
+
+  act(() => { view.result.current.setUseWorktree(false); });
+  assert.notEqual(localStorage.getItem(runLocationKey('project-one')), null);
+  act(() => { view.result.current.setUseWorktree(true); });
+  assert.equal(localStorage.getItem(runLocationKey('project-one')), null);
+  assert.equal(view.result.current.useWorktree, true);
+  view.unmount();
+
+  const remounted = renderHook(() => useChatComposerState({
+    ...rememberedBase, selectedProject: projectNamed('project-one'), defaultUseWorktree: false,
+  }));
+  assert.equal(remounted.result.current.useWorktree, false);
+  act(() => {
+    remounted.result.current.handleInputChange({ target: { value: 'fixture prompt', selectionStart: 14 } } as never);
+  });
+  await act(async () => { await remounted.result.current.handleSubmit({ preventDefault() {} } as never); });
+  assert.ok(requests.some((url) => url.endsWith('/providers/sessions')));
+  assert.equal(requests.some((url) => url.includes('/worktree-sessions')), false);
 });
 
 test('file references resolve through the selected session to its worktree', async () => {

@@ -7,18 +7,22 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import { executableFileName } from '../shared/executableFileName.js';
+
 import { applySdkLifecyclePatch } from './apply-sdk-lifecycle-patch.mjs';
 
 const execFile = promisify(execFileCallback);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
-const bunPath = path.join(rootDir, 'dist-native', process.platform === 'win32' ? 'bun.exe' : 'bun');
+const bunPath = path.join(rootDir, 'dist-native', executableFileName('bun', process.platform));
 const manifestPath = path.join(rootDir, 'server', 'gjc-runtime-manifest.json');
 const resolverFrom = path.join(rootDir, 'server');
 const argv = process.argv.slice(2);
 const update = argv.includes('--update');
-// Runtime v2 supports Linux x64, Linux arm64 and macOS arm64; Windows remains intentionally frozen out.
-const SUPPORTED_PLATFORMS = new Set(['linux-x64', 'darwin-arm64', 'linux-arm64']);
+const SUPPORTED_PLATFORMS = new Set(['linux-x64', 'darwin-arm64', 'linux-arm64', 'win32-x64']);
+
+/** A closure path is a manifest key, so it uses `/` on every platform. */
+export const nativeClosurePath = (filename) => path.posix.join('native', filename);
 
 /**
  * Fill the closure for a platform this machine is not.
@@ -134,10 +138,10 @@ async function platformClosure(nativesRoot, platform, foreignRoot) {
 
   const loaderFiles = (await fs.readdir(path.join(nativesRoot, 'native')))
     .filter((filename) => filename.endsWith('.js'))
-    .map((filename) => path.join('native', filename));
+    .map(nativeClosurePath);
   const addonFiles = (await fs.readdir(path.join(platformRoot, 'native')))
     .filter((filename) => filename.endsWith('.node'))
-    .map((filename) => path.join('native', filename));
+    .map(nativeClosurePath);
   if (addonFiles.length === 0) throw new Error(`${platformPackage} has no native addons.`);
 
   const files = [
@@ -147,61 +151,67 @@ async function platformClosure(nativesRoot, platform, foreignRoot) {
   return { files: files.sort((left, right) => `${left.package}/${left.path}`.localeCompare(`${right.package}/${right.path}`)) };
 }
 
-const manifestText = await fs.readFile(manifestPath, 'utf8');
-const manifest = JSON.parse(manifestText);
-const sdkPatch = JSON.parse(await fs.readFile(path.join(rootDir, 'patches/gjc-sdk-lifecycle/manifest.json'), 'utf8'));
-await applySdkLifecyclePatch(rootDir, sdkPatch, { checkOnly: true });
-const sdkLifecycle = {
-  id: sdkPatch.id,
-  packages: sdkPatch.packages,
-  files: sdkPatch.files.map(({ package: name, path: filename, afterSha256 }) => ({ package: name, path: filename, sha256: afterSha256 })),
-};
-const nativesRoot = await packageRoot(await nativesEntrypoint(), '@gajae-code/natives');
-const currentPlatform = `${process.platform}-${process.arch}`;
-if (!SUPPORTED_PLATFORMS.has(currentPlatform)) {
-  throw new Error(`GJC runtime manifest does not support ${currentPlatform}.`);
-}
-const actualCurrentClosure = await platformClosure(nativesRoot, currentPlatform);
+async function fillRuntimeManifest() {
+  const manifestText = await fs.readFile(manifestPath, 'utf8');
+  const manifest = JSON.parse(manifestText);
+  const sdkPatch = JSON.parse(await fs.readFile(path.join(rootDir, 'patches/gjc-sdk-lifecycle/manifest.json'), 'utf8'));
+  await applySdkLifecyclePatch(rootDir, sdkPatch, { checkOnly: true });
+  const sdkLifecycle = {
+    id: sdkPatch.id,
+    packages: sdkPatch.packages,
+    files: sdkPatch.files.map(({ package: name, path: filename, afterSha256 }) => ({ package: name, path: filename, sha256: afterSha256 })),
+  };
+  const nativesRoot = await packageRoot(await nativesEntrypoint(), '@gajae-code/natives');
+  const currentPlatform = `${process.platform}-${process.arch}`;
+  if (!SUPPORTED_PLATFORMS.has(currentPlatform)) {
+    throw new Error(`GJC runtime manifest does not support ${currentPlatform}.`);
+  }
+  const actualCurrentClosure = await platformClosure(nativesRoot, currentPlatform);
 
-if (!update) {
-  if (manifest.schemaVersion !== 2 || JSON.stringify(manifest.sdkLifecycle) !== JSON.stringify(sdkLifecycle)
-    || JSON.stringify(manifest.platforms?.[currentPlatform]) !== JSON.stringify(actualCurrentClosure)) {
-    console.error(`GJC runtime manifest closure does not match ${currentPlatform}; run npm run fill:runtime-manifest -- --update.`);
-    process.exitCode = 1;
+  if (!update) {
+    if (manifest.schemaVersion !== 2 || JSON.stringify(manifest.sdkLifecycle) !== JSON.stringify(sdkLifecycle)
+      || JSON.stringify(manifest.platforms?.[currentPlatform]) !== JSON.stringify(actualCurrentClosure)) {
+      console.error(`GJC runtime manifest closure does not match ${currentPlatform}; run npm run fill:runtime-manifest -- --update.`);
+      process.exitCode = 1;
+    } else {
+      console.log(`Verified GJC runtime manifest closure: ${currentPlatform}`);
+    }
   } else {
-    console.log(`Verified GJC runtime manifest closure: ${currentPlatform}`);
-  }
-} else {
-  manifest.schemaVersion = 2;
-  manifest.sdkLifecycle = sdkLifecycle;
-  manifest.platforms ??= {};
-  manifest.platforms[currentPlatform] = actualCurrentClosure;
+    manifest.schemaVersion = 2;
+    manifest.sdkLifecycle = sdkLifecycle;
+    manifest.platforms ??= {};
+    manifest.platforms[currentPlatform] = actualCurrentClosure;
 
-  const nativesVersion = JSON.parse(await fs.readFile(path.join(nativesRoot, 'package.json'), 'utf8')).version;
-  // The worker refuses to initialize when these disagree with what is actually
-  // installed, so they are written from the install rather than left to a hand
-  // edit that a bump can silently forget.
-  // The SDK's exports map hides package.json, so the version is read from the
-  // installed tree rather than through a resolver.
-  const sdkManifestPath = path.join(rootDir, 'node_modules', '@gajae-code', 'coding-agent', 'package.json');
-  manifest.gjcSdk = JSON.parse(await fs.readFile(sdkManifestPath, 'utf8')).version;
-  manifest.natives = nativesVersion;
-  const foreignPlatforms = new Set(allPlatforms
-    ? [...SUPPORTED_PLATFORMS].filter((platform) => platform !== currentPlatform)
-    : requestedPlatforms.filter((platform) => platform !== currentPlatform));
-  for (const platform of foreignPlatforms) {
-    const foreignRoot = await fetchPlatformRoot(platform, nativesVersion);
-    manifest.platforms[platform] = await platformClosure(nativesRoot, platform, foreignRoot);
-    console.log(`Filled ${platform} closure from ${`@gajae-code/natives-${platform}`}@${nativesVersion}.`);
+    const nativesVersion = JSON.parse(await fs.readFile(path.join(nativesRoot, 'package.json'), 'utf8')).version;
+    // The worker refuses to initialize when these disagree with what is actually
+    // installed, so they are written from the install rather than left to a hand
+    // edit that a bump can silently forget.
+    // The SDK's exports map hides package.json, so the version is read from the
+    // installed tree rather than through a resolver.
+    const sdkManifestPath = path.join(rootDir, 'node_modules', '@gajae-code', 'coding-agent', 'package.json');
+    manifest.gjcSdk = JSON.parse(await fs.readFile(sdkManifestPath, 'utf8')).version;
+    manifest.natives = nativesVersion;
+    const foreignPlatforms = new Set(allPlatforms
+      ? [...SUPPORTED_PLATFORMS].filter((platform) => platform !== currentPlatform)
+      : requestedPlatforms.filter((platform) => platform !== currentPlatform));
+    for (const platform of foreignPlatforms) {
+      const foreignRoot = await fetchPlatformRoot(platform, nativesVersion);
+      manifest.platforms[platform] = await platformClosure(nativesRoot, platform, foreignRoot);
+      console.log(`Filled ${platform} closure from ${`@gajae-code/natives-${platform}`}@${nativesVersion}.`);
+    }
+    for (const platform of SUPPORTED_PLATFORMS) {
+      manifest.platforms[platform] ??= { files: [] };
+    }
+    for (const platform of Object.keys(manifest.platforms)) {
+      if (!SUPPORTED_PLATFORMS.has(platform)) delete manifest.platforms[platform];
+    }
+    delete manifest.nativesSha256;
+    const updatedText = `${JSON.stringify(manifest, null, 2)}\n`;
+    if (updatedText !== manifestText) await fs.writeFile(manifestPath, updatedText);
+    console.log(`${updatedText === manifestText ? 'Verified' : 'Updated'} GJC runtime manifest closure: ${currentPlatform}`);
   }
-  for (const platform of SUPPORTED_PLATFORMS) {
-    manifest.platforms[platform] ??= { files: [] };
-  }
-  for (const platform of Object.keys(manifest.platforms)) {
-    if (!SUPPORTED_PLATFORMS.has(platform)) delete manifest.platforms[platform];
-  }
-  delete manifest.nativesSha256;
-  const updatedText = `${JSON.stringify(manifest, null, 2)}\n`;
-  if (updatedText !== manifestText) await fs.writeFile(manifestPath, updatedText);
-  console.log(`${updatedText === manifestText ? 'Verified' : 'Updated'} GJC runtime manifest closure: ${currentPlatform}`);
 }
+
+// Imports from tests read nativeClosurePath without touching the manifest.
+const entry = process.argv[1] ? await fs.realpath(path.resolve(process.argv[1])).catch(() => null) : null;
+if (entry !== null && entry === await fs.realpath(fileURLToPath(import.meta.url))) await fillRuntimeManifest();

@@ -74,7 +74,7 @@
     "test": "node scripts/run-tests.mjs",
     "smoke:packaged-server": "node scripts/release/smoke-packaged-server.mjs",
     "pretest": "npm run check:sdk-patch && npm run check:extract-zip-patch && npm run build:core:dev",
-    "test:e2e:gjc": "npm run check:sdk-patch && npm run check:extract-zip-patch && TSX_TSCONFIG_PATH=server/tsconfig.json node --import tsx --test --test-concurrency=1 server/e2e/gjc-slice4.browser.e2e.ts server/e2e/gjc-slice4.wire.e2e.ts",
+    "test:e2e:gjc": "npm run check:sdk-patch && npm run check:extract-zip-patch && tsx --tsconfig server/tsconfig.json --test --test-concurrency=1 server/e2e/gjc-slice4.browser.e2e.ts server/e2e/gjc-slice4.wire.e2e.ts",
     "poc:opencodex:cua": "node scripts/check-opencodex-cua-poc.mjs",
     "lint": "eslint src/ server/ shared/ scripts/ vite.config.js",
     "lint:fix": "eslint src/ server/ shared/ scripts/ vite.config.js --fix",

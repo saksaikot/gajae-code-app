@@ -15,15 +15,20 @@ concurrency:
 
 jobs:
   verify:
-    name: Verify Node ${{ matrix.node-version }}
-    runs-on: ubuntu-22.04
+    name: Verify ${{ matrix.os }} Node ${{ matrix.node-version }}
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'windows-2022' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-22.04, windows-2022]
         node-version:
           - 22
           - 24
+        exclude:
+          - os: windows-2022
+            node-version: 24
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -37,6 +42,7 @@ jobs:
           cache: npm
 
       - name: Seed verified ripgrep install cache
+        if: runner.os != 'Windows'
         run: node scripts/release/prime-ripgrep-cache.mjs
 
       - name: Install dependencies
