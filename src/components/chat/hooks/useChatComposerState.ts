@@ -31,23 +31,33 @@ export function runLocationKey(projectId: string): string {
   return `gjc-run-location:${projectId}`;
 }
 
-/** The choice remembered for a project: `false` ("Project") or `null` for none. */
-function readRunLocation(projectId: string | undefined): false | null {
+const PROJECT_RUN_LOCATION = 'project';
+
+/** Whether the user remembered "Project" as this project's run location. */
+function isProjectRunLocationRemembered(projectId: string | undefined): boolean {
   try {
-    return projectId && typeof localStorage !== 'undefined' && localStorage.getItem(runLocationKey(projectId)) === 'project' ? false : null;
+    return Boolean(projectId) && localStorage.getItem(runLocationKey(projectId as string)) === PROJECT_RUN_LOCATION;
   } catch {
     // A blocked or unavailable storage is not a reason to lose the composer.
-    return null;
+    return false;
   }
 }
 
-/** Stores only the "Project" choice; "New worktree" forgets it so the default applies again. */
-function rememberRunLocation(projectId: string | undefined, useWorktree: boolean): void {
+/** Stores the "Project" choice. */
+function rememberProjectRunLocation(projectId: string | undefined): void {
   if (!projectId) return;
   try {
-    if (typeof localStorage === 'undefined') return;
-    if (useWorktree) localStorage.removeItem(runLocationKey(projectId));
-    else localStorage.setItem(runLocationKey(projectId), 'project');
+    localStorage.setItem(runLocationKey(projectId), PROJECT_RUN_LOCATION);
+  } catch {
+    // A full or blocked storage must not take the picker down with it.
+  }
+}
+
+/** "New worktree" forgets the stored choice so the default applies again. */
+function forgetRunLocation(projectId: string | undefined): void {
+  if (!projectId) return;
+  try {
+    localStorage.removeItem(runLocationKey(projectId));
   } catch {
     // A full or blocked storage must not take the picker down with it.
   }
@@ -94,9 +104,9 @@ export function useChatComposerState(args: UseChatComposerStateArgs) {
   // the former follows `defaultUseWorktree` when it resolves. Only the "Project"
   // choice is remembered per project; a project change loads that project's own
   // choice, so one project's answer is not carried into another.
-  const [worktreeChoice, setWorktreeChoice] = useState<boolean | null>(() => readRunLocation(projectId));
+  const [worktreeChoice, setWorktreeChoice] = useState<boolean | null>(() => (isProjectRunLocationRemembered(projectId) ? false : null));
   const useWorktree = worktreeChoice ?? defaultUseWorktree;
-  const setUseWorktree = useCallback((value: boolean) => { setWorktreeChoice(value); rememberRunLocation(projectId, value); }, [projectId]);
+  const setUseWorktree = useCallback((value: boolean) => { setWorktreeChoice(value); if (value) forgetRunLocation(projectId); else rememberProjectRunLocation(projectId); }, [projectId]);
   const [modelPickerTrigger, setModelPickerTrigger] = useState(0);
   const [queuePulse, setQueuePulse] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -149,7 +159,7 @@ export function useChatComposerState(args: UseChatComposerStateArgs) {
   // the next would silently pick a location for a repository the user never
   // looked at - and for a project that is not a repository at all, the
   // worktree route would simply fail.
-  useEffect(() => { setWorktreeChoice(readRunLocation(projectId)); }, [projectId]);
+  useEffect(() => { setWorktreeChoice(isProjectRunLocationRemembered(projectId) ? false : null); }, [projectId]);
   useEffect(() => { inputRef.current = input; }, [input]);
   useEffect(() => { liveImages.current = attachedImages; }, [attachedImages]);
 

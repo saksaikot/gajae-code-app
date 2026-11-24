@@ -97,15 +97,15 @@ test('a real job guard with a sleeping grandchild is reaped and the grandchild i
   const guard = spawn(launch.command, launch.args, { env: launch.env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
   try {
     let output = '';
-    let acknowledged = false;
+    let hasAcknowledged = false;
     const grandchildPid = await new Promise<number>((resolve, reject) => {
       guard.once('error', reject);
       guard.once('close', () => reject(new Error(`guard closed early: ${output}`)));
       guard.stdout.setEncoding('utf8');
       guard.stdout.on('data', (chunk: string) => {
         output += chunk;
-        if (!acknowledged && output.includes(GJC_WINDOWS_JOB_GUARD_READY)) {
-          acknowledged = true;
+        if (!hasAcknowledged && output.includes(GJC_WINDOWS_JOB_GUARD_READY)) {
+          hasAcknowledged = true;
           guard.stdin.write(`${GJC_WINDOWS_JOB_GUARD_ACK}\n`);
         }
         const match = /grandchild:(\d+)/u.exec(output);

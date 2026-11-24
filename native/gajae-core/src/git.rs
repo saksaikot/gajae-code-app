@@ -1355,16 +1355,14 @@ mod tests {
         let link = repo.path.with_extension("link");
         make_dir_link(&repo.path, &link);
         let path = link.join(".gjc-worktrees/job-1");
+        let validation = validate_workdir(&link);
         let result = create(
             &link,
             &json!({"jobId":"job-1", "branch":"job/job-1", "path":path}),
         );
         remove_dir_link(&link);
-        assert!(matches!(
-            validate_workdir(&link),
-            Err(GitError::InvalidPath)
-        ));
-        assert!(result.is_err());
+        assert!(matches!(validation, Err(GitError::InvalidPath)));
+        assert!(matches!(result, Err(GitError::InvalidPath)));
     }
 
     #[cfg(unix)]

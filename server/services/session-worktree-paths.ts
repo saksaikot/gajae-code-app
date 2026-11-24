@@ -18,11 +18,6 @@ export function isSamePath(left: string, right: string, platform: NodeJS.Platfor
   if (platform !== 'win32') return left === right;
   return path.win32.normalize(left).toLowerCase() === path.win32.normalize(right).toLowerCase();
 }
-/** Worker: whether the path the core reported is this job's managed checkout under the repository root. */
-export function isPreparedWorktreePath(preparedPath: string | null, repositoryRoot: string, jobId: string, platform: NodeJS.Platform): boolean {
-  if (!preparedPath) return false;
-  return isSamePath(preparedPath, path.join(repositoryRoot, '.gjc-worktrees', jobId), platform);
-}
 const unavailable = () => new AppError('Session worktree is unavailable.', { code: 'SESSION_WORKTREE_UNAVAILABLE', statusCode: 409 });
 
 type JobArchival = { archive(params: { jobId: string }): Promise<unknown>; unarchive(params: { jobId: string }): Promise<unknown> };
@@ -99,7 +94,7 @@ export async function validateSessionRepository(root: string): Promise<void> {
 export async function validateSessionWorktree(row: SessionWorktreeRow, preparedPath = row.worktree_path): Promise<string> {
   await validateSessionRepository(row.repository_root);
   const expected = path.join(row.repository_root, '.gjc-worktrees', row.job_id);
-  if (!preparedPath || !isPreparedWorktreePath(preparedPath, row.repository_root, row.job_id, process.platform)) throw unavailable();
+  if (!preparedPath || !isSamePath(preparedPath, expected, process.platform)) throw unavailable();
   const git = new GjcGitClient({ workdir: row.repository_root });
   try {
     if (!isSamePath(await realpath(preparedPath), expected, process.platform)) throw unavailable();

@@ -478,7 +478,8 @@ and `server/gjc-worker-client.test.ts`; see `docs/BROWSER-EGO-POC.md`.
   reaping requires direct-child close and process-group `ESRCH`.
 - On Windows the worker runs behind a guard process that owns a kill-on-close
   Job Object. Reaping kills the guard and waits for its `close`; the kernel then
-  ends the worker and every process it started. A guard that already exited
+  ends the worker and every process it started; "reaped" here means the guard
+  closed and the kernel ends the tree, not that every process is already gone. A guard that already exited
   counts as reaped, one that never closes fails the reap after 5 s as
   `unconfirmed`. There is no `taskkill /T /F` fallback.
 - `worker.initialize` covers the whole SDK bootstrap (runtime manifest check,

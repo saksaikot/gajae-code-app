@@ -186,7 +186,9 @@ Register-ScheduledTask -TaskName 'GajaeCodeApp' -Action $action -Trigger $trigge
 ```
 
 Expose it to a phone over https on the tailnet. Use `serve`, never `funnel`:
-web mode has no sign-in, so every device on the tailnet is the owner.
+web mode has no sign-in, so every device on the tailnet is the owner. Open
+`https://<pc>.<tailnet>.ts.net/` on the phone, with the Tailscale VPN on;
+`http://` is not served, because `tailscale serve` maps only port 443.
 
 ```powershell
 tailscale serve --bg 3001

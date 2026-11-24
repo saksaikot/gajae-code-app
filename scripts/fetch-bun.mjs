@@ -166,6 +166,4 @@ async function installBun() {
   }
 }
 
-// Imports from tests read PLATFORMS without downloading anything.
-const entry = process.argv[1] ? await fs.realpath(path.resolve(process.argv[1])).catch(() => null) : null;
-if (entry !== null && entry === await fs.realpath(fileURLToPath(import.meta.url))) await installBun();
+if (import.meta.main) await installBun();

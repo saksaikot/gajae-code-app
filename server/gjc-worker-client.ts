@@ -205,6 +205,8 @@ const REQUEST_TIMEOUT = 'GJC worker request timed out.';
  */
 export const DEFAULT_INITIALIZE_TIMEOUT_MS = 60_000;
 export const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
+const WORKER_TREE_TERMINATION_TIMEOUT_MS = 5_000;
+const WORKER_TREE_TERMINATION_TIMEOUT_MESSAGE = 'GJC worker tree termination timed out.';
 class GjcConfigurationError extends Error {}
 
 /**
@@ -387,14 +389,13 @@ export function killWorkerTree(
   kill: (pid: number, signal: NodeJS.Signals | 0) => void = process.kill,
 ): Promise<void> {
   if (platform === 'win32') {
-    // The child is the job guard. Its Job Object has kill-on-close and the guard
-    // holds the only handle, so ending the guard makes the kernel end the tree.
+    // Killing the guard closes the only Job Object handle, so the kernel ends the tree.
     return new Promise((resolve, reject) => {
       if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) {
         resolve();
         return;
       }
-      const timer = setTimeout(() => reject(new Error('GJC worker tree termination timed out.')), 5_000);
+      const timer = setTimeout(() => reject(new Error(WORKER_TREE_TERMINATION_TIMEOUT_MESSAGE)), WORKER_TREE_TERMINATION_TIMEOUT_MS);
       timer.unref?.();
       child.on('close', () => {
         clearTimeout(timer);
@@ -452,7 +453,7 @@ export function killWorkerTree(
       closed = true;
       verifyProcessGroup();
     });
-    const timer = setTimeout(() => finish(new Error('GJC worker tree termination timed out.')), 5_000);
+    const timer = setTimeout(() => finish(new Error(WORKER_TREE_TERMINATION_TIMEOUT_MESSAGE)), WORKER_TREE_TERMINATION_TIMEOUT_MS);
     timer.unref?.();
     try {
       if (child.pid) {

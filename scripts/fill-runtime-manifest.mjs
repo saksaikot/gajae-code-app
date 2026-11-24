@@ -212,6 +212,4 @@ async function fillRuntimeManifest() {
   }
 }
 
-// Imports from tests read nativeClosurePath without touching the manifest.
-const entry = process.argv[1] ? await fs.realpath(path.resolve(process.argv[1])).catch(() => null) : null;
-if (entry !== null && entry === await fs.realpath(fileURLToPath(import.meta.url))) await fillRuntimeManifest();
+if (import.meta.main) await fillRuntimeManifest();
