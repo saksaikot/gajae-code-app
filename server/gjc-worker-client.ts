@@ -1014,11 +1014,11 @@ export class GjcWorkerSupervisor {
       ?? (existsSync(bundledBunPath) ? bundledBunPath : undefined)
       ?? (!compiled && this.runtime.allowDevelopmentBun ? 'bun' : undefined);
     if (!bunPath) throw new Error(SAFE_FAILURE);
-    const coreExecutable = executableFileName('gajae-core', this.runtime.platform);
+    const coreFileName = executableFileName('gajae-core', this.runtime.platform);
     const corePath = this.runtime.corePath ?? fileURLToPath(new URL(
       compiled
-        ? `../../dist-native/${coreExecutable}`
-        : `../dist-native/${coreExecutable}`,
+        ? `../../dist-native/${coreFileName}`
+        : `../dist-native/${coreFileName}`,
       import.meta.url,
     ));
     const coreArgs = ['--', bunPath, workerPath];
